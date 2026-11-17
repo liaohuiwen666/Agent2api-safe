@@ -55,7 +55,20 @@ impl ControlClient {
     }
 
     pub async fn site_json(&self, path: &str, operation: &str) -> Result<Value, String> {
-        let headers = vec![("Cookie".to_string(), format!("m_session_id={}", self.token))];
+        // 网页会话请求按「站点内 XHR」补齐浏览器固定头（2026-11 全线补齐）：
+        // 真浏览器从 modelscope.cn 页面发起的同源请求必带 Referer/Origin 与
+        // sec-fetch-*；此前只有 Cookie 一项，本身就是廉价特征。
+        // UA 与 Accept-Language 由共享客户端默认身份提供（http.rs）。
+        let base = self.region.site_base_url();
+        let headers = vec![
+            ("Cookie".to_string(), format!("m_session_id={}", self.token)),
+            ("Referer".to_string(), format!("{base}/")),
+            ("Origin".to_string(), base.to_string()),
+            ("Accept".to_string(), "application/json, text/plain, */*".to_string()),
+            ("Sec-Fetch-Site".to_string(), "same-origin".to_string()),
+            ("Sec-Fetch-Mode".to_string(), "cors".to_string()),
+            ("Sec-Fetch-Dest".to_string(), "empty".to_string()),
+        ];
         let (status, payload) = http::get_json(&self.http, &site_url(self.region, path), &headers)
             .await.map_err(|error| format!("{operation}失败：{error}"))?;
         self.checked(status, payload, operation, true)

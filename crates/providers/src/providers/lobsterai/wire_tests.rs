@@ -303,13 +303,22 @@ fn catalog_path_sends_four_capabilities_and_filters_virtual_models() {
     assert!(request.path.starts_with("/api/models/available?"), "{}", request.path);
     assert!(request.path.contains("firstKeyfrom=official"), "{}", request.path);
     assert!(request.path.contains("latestKeyfrom=official"), "{}", request.path);
-    assert!(request.path.contains("version=2026.11.6"), "{}", request.path);
+    // 版本号运行时从官方更新接口实时获取（12h 缓存），不硬编码具体值，
+    // 只断言是合法 CalVer 且三处（URL / 版本头 / UA）完全一致。
+    let version = request
+        .path
+        .split("version=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .expect("version 参数存在")
+        .to_string();
+    assert!(version.starts_with("2026."), "{}", request.path);
     assert!(request.path.contains("uuid=158d6395"), "{}", request.path);
 
     assert_eq!(request.header("x-lobsterai-client-capabilities"), OFFICIAL_CAPABILITIES);
-    assert_eq!(request.header("x-lobsterai-client-version"), "2026.11.6");
+    assert_eq!(request.header("x-lobsterai-client-version"), version);
     let ua = request.header("user-agent");
-    assert!(ua.contains("LobsterAI/2026.11.6"), "{ua}");
+    assert!(ua.contains(&format!("LobsterAI/{version}")), "{ua}");
     assert_eq!(request.header_all("accept").len(), 1, "{:?}", request.headers);
 
     // 对外清单：虚拟模型被过滤，正常模型保留

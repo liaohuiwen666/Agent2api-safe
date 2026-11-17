@@ -29,8 +29,26 @@ use serde_json::Value;
 /// 控制面请求的超时（目录 / 余额 / 签到这类小请求）。
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 
-// 计费接口在缺少 User-Agent 时会返回 403 / code=10085；请求级头可覆盖此默认值。
-const DEFAULT_USER_AGENT: &str = "undici";
+// 默认身份：浏览器形态的 UA + Accept-Language。
+//
+// ── 为什么不再用 undici（2026-11 全线补齐）────────────────────
+// undici 是 Node 的 fetch 标识，等于自报「我是脚本」：accio 侧 2026-09 被
+// 上游用「HTTP 200 + HTML 挑战页」识别过（见 accio/endpoints.rs:82），trae
+// 也明确要求「UA 必须显式给」（见 trae/profile.rs:152）。请求级头仍可覆盖
+// 此默认值；显式声明了自家 UA 的 provider 不受影响。
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
+/// 浏览器固定会带的语言头；缺失它是一处廉价特征。
+const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
+
+/// 客户端级默认头（请求级头仍可覆盖）。
+fn default_headers() -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(DEFAULT_ACCEPT_LANGUAGE) {
+        headers.insert(reqwest::header::ACCEPT_LANGUAGE, value);
+    }
+    headers
+}
 
 type ClientKey = (String, Option<crate::timeouts::Timeouts>);
 
@@ -80,7 +98,8 @@ fn build(proxy_url: &str, timeouts: Option<crate::timeouts::Timeouts>) -> reqwes
     let mut builder = reqwest::Client::builder()
         // 与网关同一条栈：rustls，不依赖系统 openssl
         .use_rustls_tls()
-        .user_agent(DEFAULT_USER_AGENT);
+        .user_agent(DEFAULT_USER_AGENT)
+        .default_headers(default_headers());
     builder = match timeouts {
         Some(timeouts) => builder
             .connect_timeout(Duration::from_millis(timeouts.connect_ms()))
@@ -132,6 +151,7 @@ pub fn control_client_system_proxy() -> reqwest::Client {
                 .use_rustls_tls()
                 .timeout(CONTROL_TIMEOUT)
                 .user_agent(DEFAULT_USER_AGENT)
+                .default_headers(default_headers())
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new())
         })
