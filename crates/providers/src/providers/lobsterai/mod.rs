@@ -48,10 +48,17 @@ pub mod checkin;
 pub mod credentials;
 pub mod endpoints;
 pub mod errors;
+/// 官方客户端指纹：keyfrom / UA / traceparent / 用量归因头的**唯一定义点**
+/// （见模块头；本次「被识别为反代」的修复主体在这里）。
+pub mod fingerprint;
 pub mod models;
 pub mod oauth;
 pub mod usage;
 pub mod version;
+
+/// 上线前的抓包自测（mock 上游 + 逐头断言；只在测试构建里编译）。
+#[cfg(test)]
+mod wire_tests;
 
 use std::sync::OnceLock;
 
@@ -143,7 +150,8 @@ impl Provider for LobsterAiProvider {
             let record = crate::store::record(ctx, ID, &req.account).await?;
             let account = account_shape(&record);
             let headers = crate::headers::Headers::from_map(&req.headers);
-            chat::build_chat_request(&account, &req.body, &headers)
+            // `req.account` 只给 `x-lobster-session-id` 的派生用（见 `chat.rs`）
+            chat::build_chat_request(&account, &req.account, &req.body, &headers)
                 .map_err(GatewayError::into_message)
         })
     }
@@ -393,9 +401,19 @@ impl Provider for LobsterAiProvider {
     /// 用回调里的一次性 `code` 换令牌。
     ///
     /// `flow` 就是 `login.start` 返回的 state：先取走那一轮（取走即失效），
-    /// 再换码。`uuid` 与两个 keyfrom 由**插件生成**（参考实现同款）：`uuid`
-    /// 是这次登录的安装标识、`firstKeyfrom` 是登录时刻（毫秒）、
-    /// `latestKeyfrom` 取当前时刻 —— 三者随换码下发、续期时要原样回传。
+    /// 再换码。两个 keyfrom 与 `uuid` 随换码下发、续期时要原样回传：
+    ///
+    /// ```text
+    ///   uuid           本次登录生成的一次 UUIDv4（装机标识；不是凭据）
+    ///   firstKeyfrom   `official` —— 官方包构建期固化的渠道名（**只写一次**）
+    ///   latestKeyfrom  `official` —— 同上的当前包渠道（每次启动更新，仍是 official）
+    /// ```
+    ///
+    /// ⚠️ 旧实现把 `keyfrom` 填成 `now_ms()` 的毫秒时间戳（并在注释里把它解释成
+    /// 「登录时刻」）。那不是官方语义：`keyfrom` 是**渠道归因**字段，官方口径是
+    /// `^[a-z0-9_-]{1,64}$` 的渠道名，个人用户的官方包恒为 `official`；
+    /// 而「13 位纯数字」这种取值在服务端看来就是「不是官方客户端」。
+    /// 现在恒发 [`fingerprint::OFFICIAL_KEYFROM`]，见 `fingerprint.rs` 模块头。
     fn login_callback<'a>(
         &'a self,
         _ctx: &'a PluginCtx,
@@ -420,10 +438,10 @@ impl Provider for LobsterAiProvider {
                 });
             }
             let client_version = chat::prime_client_version().await;
-            let keyfrom = crate::http::now_ms().max(0).to_string();
+            let keyfrom = fingerprint::OFFICIAL_KEYFROM;
             let uuid = crate::ids::uuid_v4();
             let bundle =
-                match oauth::exchange(&code, &uuid, &keyfrom, &keyfrom, &client_version).await {
+                match oauth::exchange(&code, &uuid, keyfrom, keyfrom, &client_version).await {
                     Ok(bundle) => bundle,
                     Err(error) => {
                         return Ok(proto::LoginPoll::Failed { message: error.message });
@@ -443,8 +461,21 @@ impl Provider for LobsterAiProvider {
                 );
             }
             secret.insert("uuid".to_string(), Value::String(uuid));
-            secret.insert("firstKeyfrom".to_string(), Value::String(keyfrom.clone()));
-            secret.insert("latestKeyfrom".to_string(), Value::String(keyfrom));
+            secret.insert(
+                "firstKeyfrom".to_string(),
+                Value::String(keyfrom.to_string()),
+            );
+            secret.insert(
+                "latestKeyfrom".to_string(),
+                Value::String(keyfrom.to_string()),
+            );
+            // 登录时的客户端版本也落一份：排障时能回答「这个账号是用哪个版本登的」，
+            // 且续期必须与登录时同一族 CalVer（`credentials::keyfrom_fields` 传的是
+            // 当前解析值，这里只是留证，不参与请求）。
+            secret.insert(
+                "clientVersion".to_string(),
+                Value::String(client_version.clone()),
+            );
             if !bundle.uid.trim().is_empty() {
                 secret.insert("uid".to_string(), Value::String(bundle.uid.clone()));
             }

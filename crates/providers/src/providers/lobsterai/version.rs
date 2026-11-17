@@ -20,7 +20,7 @@ use crate::http::send_raw;
 use crate::logging;
 
 use super::endpoints::{
-    CLIENT_VERSION_API, FALLBACK_CLIENT_VERSION, REQUEST_TIMEOUT_MS, USER_AGENT, VERSION_CACHE_TTL_MS,
+    CLIENT_VERSION_API, FALLBACK_CLIENT_VERSION, REQUEST_TIMEOUT_MS, VERSION_CACHE_TTL_MS,
 };
 
 /// 进程级缓存的版本（`Some` 即已解析过；空串表示「刚查过但失败」，靠 TTL 过期）
@@ -80,7 +80,9 @@ pub async fn resolve_client_version() -> String {
         None,
         &[
             ("accept".to_string(), "application/json".to_string()),
-            ("user-agent".to_string(), USER_AGENT.to_string()),
+            // 版本探测本身不是官方客户端的请求（官方读的是自己打包的版本），
+            // 但 UA 仍按官方形态发：任何一条打到有道域名的请求都不该出现非 Chromium 的 UA。
+            ("user-agent".to_string(), super::fingerprint::user_agent("")),
         ],
         None,
         Some(REQUEST_TIMEOUT_MS),

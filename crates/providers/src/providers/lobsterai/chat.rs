@@ -44,6 +44,26 @@
 //! 读；快照还没填时退回已知可用的兜底常量，**绝不发空版本头**（与 Go 参考
 //! `headers.go::resolveHeaderVersion` 同一口径）。
 //!
+//! ── 转发头集合按官方 `buildUpstreamRequestHeaders` 对齐 ──────────────
+//! 官方本地代理是**重建**上游头的（入站头除 `Content-Type` / `Accept` 外一个都
+//! 不透传），全集是（`openclawTokenProxy.ts:1237-1261`）：
+//!
+//! ```text
+//!   Authorization: Bearer <accessToken>
+//!   Content-Type: <入站值或 application/json>
+//!   X-LobsterAI-Client-Capabilities: <官方四段常量>
+//!   X-LobsterAI-Client-Version: <app.getVersion() 的 CalVer>
+//!   traceparent: 00-<32hex>-<16hex>-01
+//!   x-lobster-session-id / x-lobster-turn-id / x-lobster-user-message
+//!     （+ 命中该 turn 模型时的 x-lobster-model-preset）
+//!   Accept: <入站有才转发>
+//!   User-Agent: Electron/Chromium 默认 UA（由 net.fetch 补）
+//! ```
+//!
+//! 旧实现只发前两条 + 2 段能力位 + 写死的 `LobsterAI/0.1.0`，缺 tracking 与
+//! 用量归因头 —— 与官方流量对比是「一眼可见」的差异。现在按上表补齐；
+//! `x-lobster-model-preset` 仍是**故意不发**（见下文 `build_chat_request` 的注释）。
+//!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
@@ -56,7 +76,8 @@ use agent2api_provider_sdk::ChatPlan;
 
 use crate::errors::GatewayError;
 
-use super::endpoints::{CLIENT_CAPABILITIES, USER_AGENT, chat_url};
+use super::endpoints::{CLIENT_CAPABILITIES, chat_url};
+use super::fingerprint::{self, RequestTrace};
 use super::models;
 use super::version;
 
@@ -142,10 +163,14 @@ fn tool_choice_must_go(value: &Value) -> bool {
 }
 
 /// 准备一次上游调用。
+///
+/// `account_id` 只参与 `x-lobster-session-id` 的派生（见
+/// [`fingerprint::session_id`]），不进请求体、不落任何日志。
 pub fn build_chat_request(
     account: &Value,
+    account_id: &str,
     body: &Value,
-    _client_headers: &Headers,
+    client_headers: &Headers,
 ) -> Result<ChatPlan, GatewayError> {
     // 令牌读取口径与 `atomcode/chat.rs` 一致（会话形态的 `auth.accessToken`）
     let access_token = account
@@ -193,15 +218,18 @@ pub fn build_chat_request(
     // `stream` **不动**：本网关的转发入口恒以 `stream:true` 请求上游（见模块头），
     // 本家 `stream:false` 会回 HTTP 500 —— 碰它反而会把它弄坏。
 
-    let headers: Vec<(String, String)> = vec![
+    // 版本一处取值、三处复用（版本头 / UA 里的 `LobsterAI/<ver>` / 与本家
+    // `body.version` 同源）：官方客户端这三处的值必须一致，写岔一处就是指纹差异。
+    let client_version = client_version_header();
+
+    // 官方每 turn 一条 traceparent + 三个用量归因头（见模块头的头集合表）。
+    let trace = RequestTrace::new();
+    let first_message = fingerprint::first_user_message(body);
+
+    let mut headers: Vec<(String, String)> = vec![
         (
             "authorization".to_string(),
             format!("Bearer {access_token}"),
-        ),
-        // 只收 SSE：Accept 两个都报（照 Go `chatHeaders` 的 `text/event-stream, application/json`）
-        (
-            "accept".to_string(),
-            "text/event-stream, application/json".to_string(),
         ),
         // ⚠️ `Content-Type` **必须显式发**：本仓的转发层用 `client.post(url).body(bytes)`
         // （`core/upstream/request.rs` 的发送点），reqwest 的 `.body()` **不会**自动补
@@ -212,22 +240,74 @@ pub fn build_chat_request(
         // 签到）都带了它且成功；伪令牌探针证明上游**先鉴权**（401 code 40100），
         // 所以 500 出在鉴权之后。两个参考实现也都把它列在四个基础头里
         // （TS `lobsteraiAuthHeaders`、Go `authHeaders`）。
+        //
+        // 取值口径按官方：**入站给了就原样转发，没给才用 `application/json`**
+        // （官方 `buildUpstreamRequestHeaders` 的第三条）。
         (
             "content-type".to_string(),
-            "application/json".to_string(),
+            incoming_content_type(client_headers),
         ),
-        // 两个客户端头都是功能性的（能力位过滤模型、版本决定被当成哪个客户端）
+        // 两个客户端头：能力位恒官方四段（恒定量，不按请求协商），版本是 CalVer。
         (
             "x-lobsterai-client-capabilities".to_string(),
             CLIENT_CAPABILITIES.to_string(),
         ),
         (
             "x-lobsterai-client-version".to_string(),
-            client_version_header(),
+            client_version.clone(),
         ),
-        // UA 固定不跟随真实版本（照抄参考实现，不是装饰）
-        ("user-agent".to_string(), USER_AGENT.to_string()),
+        // W3C 追踪：`00-<traceId>-<spanId>-01`（官方 `formatLlmTraceparent`）。
+        (
+            "traceparent".to_string(),
+            trace.traceparent(),
+        ),
+        // 用量归因：会话 id（内容派生、会话内稳定）+ turn id（= 本次 traceId）
+        (
+            "x-lobster-session-id".to_string(),
+            fingerprint::session_id(account_id, &first_message),
+        ),
+        (
+            "x-lobster-turn-id".to_string(),
+            fingerprint::turn_id(&trace),
+        ),
+        // UA：Electron/Chromium 默认形态，版本 token 与版本头同一个值。
+        (
+            "user-agent".to_string(),
+            fingerprint::user_agent(&client_version),
+        ),
     ];
 
+    // 用户消息原文（前 200 码点、URL 编码）：官方只在「这条请求能映射到一个
+    // 用户 turn」时追加 —— 本网关一次请求就是一次 turn，所以恒有。
+    if let Some(message) = fingerprint::last_user_message(body) {
+        let value = fingerprint::user_message_header(&message);
+        if !value.is_empty() {
+            headers.push(("x-lobster-user-message".to_string(), value));
+        }
+    }
+
+    // `Accept`：官方口径是「入站带了才转发」，没带就退回本家必需的那条
+    // （本家只收 SSE，两个类型都报 —— 照 Go `chatHeaders`）。
+    headers.push((
+        "accept".to_string(),
+        match client_headers.get("accept") {
+            Some(value) if !value.trim().is_empty() => value.trim().to_string(),
+            _ => "text/event-stream, application/json".to_string(),
+        },
+    ));
+
+    // ⚠️ **不发 `x-lobster-model-preset`**：官方只在「请求的 model 与本 turn 在
+    // 界面里选定的 preset 一致」时附加，而网关是 OpenHub/OpenAI 入口，没有
+    // 「界面 preset」这个概念。硬编一个等于自报「我每次都命中 preset」，
+    // 比不发更可疑 —— 对照表第 10 条把「与请求体无关的静态头」列为破绽。
+
     Ok(ChatPlan::chat(chat_url(), headers, payload))
+}
+
+/// 入站的 `Content-Type`（没有或为空时退回 `application/json`）。
+fn incoming_content_type(client_headers: &Headers) -> String {
+    match client_headers.get("content-type") {
+        Some(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => "application/json".to_string(),
+    }
 }

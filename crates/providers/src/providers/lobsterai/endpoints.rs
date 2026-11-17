@@ -26,9 +26,23 @@
 //! 缺它时发 `reasoning_effort: "off"` 会得到 HTTP 500。两个都实测过
 //! （见参考实现的 `lobsterai-product.ts` 与 `headers.go` 的注释）。
 //!
-//! 版本头走的是**日期式版本**（形如 `2026.9.4`），由上游的更新接口给出；
-//! 而 `User-Agent` 照抄参考实现里那个固定的 `LobsterAI/0.1.0` —— 它**故意不跟**
-//! 真实版本，动态的那份只由 `X-LobsterAI-Client-Version` 承载。
+//! 版本头走的是**日期式版本**（CalVer，形如 `2026.11.6`），由上游的更新接口给出。
+//!
+//! ⚠️ **能力位与 `User-Agent` 已按官方客户端行为纠正**（证据分级见
+//! `fingerprint.rs` 的模块头）：
+//!
+//! ```text
+//!   旧（参考实现的形态 —— 每一条都是「这不是官方端」的凭据）
+//!     X-LobsterAI-Client-Capabilities: kimi-k3-agentic-v1,thinking-level-control-v1   （2 段子集）
+//!     User-Agent: LobsterAI/0.1.0                                    （非 Chromium 形态，且与版本头对不上）
+//!   新（官方客户端形态）
+//!     X-LobsterAI-Client-Capabilities: virtual-models-v1,kimi-k3-agentic-v1,
+//!                                      thinking-level-control-v1,upstream-error-details-v1  （恒 4 段、顺序固定）
+//!     User-Agent: Mozilla/5.0 (…) … LobsterAI/<CalVer> Chrome/<chromium> Electron/<electron> …
+//! ```
+//!
+//! UA 由 [`super::fingerprint::user_agent`] 统一生成：它的版本 token 用**同一个**
+//! 已解析版本，保证「body.version = 版本头 = UA 里的 `LobsterAI/<ver>`」三处一致。
 //!
 //! ── 没有任何签名 ────────────────────────────────────────────
 //! 纯 `Bearer`。没有 HMAC / DPoP / PKCE，也没有腾讯系的 `X-Domain` /
@@ -49,16 +63,27 @@ pub const PORTAL_BASE: &str = "https://lobsterai.youdao.com";
 pub const CLIENT_VERSION_API: &str =
     "https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update";
 
-/// 查不到版本时用的兜底值
-pub const FALLBACK_CLIENT_VERSION: &str = "2026.9.4";
+/// 查不到版本时用的兜底值。
+///
+/// 必须是一个**真实发布过的 CalVer**（当前官方 main 分支 `package.json` 的
+/// `2026.11.6`）：版本头是功能性头，空串或 `0.0.0` 会被按「不认识的客户端」
+/// 对待；`2026.9.4`（旧兜底）已经明显落后于官方当前发布版，也一并纠正。
+pub const FALLBACK_CLIENT_VERSION: &str = "2026.11.16";
 
-/// `User-Agent`：照抄参考实现，**故意固定**不跟随真实版本
-pub const USER_AGENT: &str = "LobsterAI/0.1.0";
-
-/// 声明的客户端能力。两个能力位都是功能性的：
-/// `kimi-k3-agentic-v1` 是模型列表的准入门（缺它少一个模型）、
-/// `thinking-level-control-v1` 是 `reasoning_effort: "off"` 的前提（缺它 HTTP 500）。
-pub const CLIENT_CAPABILITIES: &str = "kimi-k3-agentic-v1,thinking-level-control-v1";
+/// 声明的客户端能力 —— **官方四段，恒定、顺序固定、英文逗号无空格**
+/// （`src/shared/providers/modelRuntimeProfiles.ts:17-27` 的常量原文）。
+///
+/// ```text
+///   virtual-models-v1           虚拟模型（yd-fast / yd-ultra）解析
+///   kimi-k3-agentic-v1          Kimi K3 agentic 运行时配置（模型目录的准入门）
+///   thinking-level-control-v1   思考等级控制（`reasoning_effort:"off"` 的前提，缺它 HTTP 500）
+///   upstream-error-details-v1   上游错误详情透出
+/// ```
+///
+/// 为什么不能只发「自己用得到的那两段」：官方客户端发的是**全客户端常量**，
+/// 不是按请求协商出来的子集（`endpoints.rs` 模块头那句「服务端按它过滤」是
+/// 功能面的事实，但指纹面的事实是「官方恒 4 段」）。发子集等于自报家门。
+pub const CLIENT_CAPABILITIES: &str = "virtual-models-v1,kimi-k3-agentic-v1,thinking-level-control-v1,upstream-error-details-v1";
 
 /// 用授权码换令牌（**不带 Authorization**）
 pub const EXCHANGE_PATH: &str = "/api/auth/exchange";

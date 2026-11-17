@@ -81,6 +81,10 @@ impl LobsterCredentials {
     /// 两个消费点共用这一份：目录端点把它拼成 **query**（`models.go:523-551`，
     /// 特意不带 refresh token —— query 会进服务端访问日志），续期端点把它当
     /// **body** 再补一个 `refreshToken`。
+    ///
+    /// 两个 keyfrom 已在 [`from_record`] 里按官方口径归一（见
+    /// `fingerprint::normalize_keyfrom`），所以这里拼出去的恒是合法渠道名
+    /// （个人账号即 `official`）。
     pub fn keyfrom_fields(&self, client_version: &str) -> Vec<(&'static str, String)> {
         let mut fields: Vec<(&'static str, String)> = vec![
             ("firstKeyfrom", self.first_keyfrom.clone()),
@@ -209,8 +213,17 @@ pub fn from_record(record: Option<&Value>) -> Result<LobsterCredentials, Gateway
         user_id: pick(record, &["userId", "user_id"]),
         nickname: pick(record, &["name", "nickname"]),
         uuid: pick(record, &["uuid", "UUID"]),
-        first_keyfrom: pick(record, &["firstKeyfrom", "first_keyfrom"]),
-        latest_keyfrom: pick(record, &["latestKeyfrom", "latest_keyfrom"]),
+        // 两个 keyfrom 在**读取时**按官方口径归一（合法渠道名 or `official`）：
+        // 旧版本把登录时刻的毫秒时间戳写进了这两个字段，直接回传就是「非官方渠道名」；
+        // 归一放在这里，存量账号不必重新登录也会被纠正（见 `fingerprint::normalize_keyfrom`）。
+        first_keyfrom: super::fingerprint::normalize_keyfrom(&pick(
+            record,
+            &["firstKeyfrom", "first_keyfrom"],
+        )),
+        latest_keyfrom: super::fingerprint::normalize_keyfrom(&pick(
+            record,
+            &["latestKeyfrom", "latest_keyfrom"],
+        )),
     })
 }
 

@@ -43,8 +43,7 @@ use crate::logging;
 use super::chat;
 use super::credentials::LobsterCredentials;
 use super::endpoints::{
-    CATALOG_TIMEOUT_MS, CLIENT_CAPABILITIES, MODELS_PATH, USER_AGENT, api_base, models_url,
-    urlencode,
+    CATALOG_TIMEOUT_MS, CLIENT_CAPABILITIES, MODELS_PATH, api_base, models_url, urlencode,
 };
 
 /// 目录缓存时长（与参考实现的 2 小时同档）
@@ -195,6 +194,14 @@ fn entry_from_upstream(value: &Value) -> Option<ModelEntry> {
     if wire_id.is_empty() {
         return None;
     }
+    // 虚拟模型（`yd-fast` / `yd-ultra`）不进目录：它们要用 `POST
+    // /api/models/<id>/resolve` 现解析成真实模型，而本适配器只实现
+    // `POST /api/proxy/v1/chat/completions` 这条路径，把虚拟 id 摆上目录
+    // 等于给用户一个点了必然失败的模型。声明 `virtual-models-v1` 能力位
+    // 之后上游会把这些 id 一起下发（指纹要的就是「恒 4 段」），所以过滤放在这里。
+    if is_virtual_model(&wire_id) {
+        return None;
+    }
     let display_name = match value.get("modelName").and_then(Value::as_str) {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => wire_id.clone(),
@@ -213,6 +220,11 @@ fn entry_from_upstream(value: &Value) -> Option<ModelEntry> {
         cost_multiplier: value.get("costMultiplier").and_then(read_number),
         wire_id,
     })
+}
+
+/// 是不是虚拟模型 id（需要 `/resolve` 才能用；本适配器不实现那条路径）。
+fn is_virtual_model(wire_id: &str) -> bool {
+    matches!(wire_id.trim().to_ascii_lowercase().as_str(), "yd-fast" | "yd-ultra")
 }
 
 /// 倍率的展示串：`0` → 免费，其余 → `x<数字>`（前端 `formatCredits` 认 `x\d`）。
@@ -356,7 +368,7 @@ pub fn upstream_id_for(requested: &str) -> Option<String> {
 
 /// 把 `keyfrom_fields` 拼成 URL query（`k=v&k2=v2`，值 urlencoded，**不含
 /// refresh token** —— 见模块头）。
-fn keyfrom_query(credentials: &LobsterCredentials, client_version: &str) -> String {
+pub(crate) fn keyfrom_query(credentials: &LobsterCredentials, client_version: &str) -> String {
     let fields = credentials.keyfrom_fields(client_version);
     let mut query = String::new();
     for (key, value) in fields {
@@ -415,12 +427,14 @@ async fn fetch_catalog(
         client_version.trim().to_string()
     };
     let url = catalog_url(&keyfrom_query(credentials, &version));
+    // 头集合按官方目录预热的形态（`startupCacheWarmup.ts:31-37,91-97`）：
+    // `Accept: application/json` + Capabilities（四段常量）+ Client-Version + UA。
+    // `Accept` 不在这里写：`send_raw` 已无条件补一条，再写一遍会变成重复头。
     let headers: Vec<(String, String)> = vec![
         (
             "authorization".to_string(),
             format!("Bearer {}", credentials.access_token),
         ),
-        ("accept".to_string(), "application/json".to_string()),
         (
             "x-lobsterai-client-capabilities".to_string(),
             CLIENT_CAPABILITIES.to_string(),
@@ -429,7 +443,10 @@ async fn fetch_catalog(
             "x-lobsterai-client-version".to_string(),
             version.clone(),
         ),
-        ("user-agent".to_string(), USER_AGENT.to_string()),
+        (
+            "user-agent".to_string(),
+            super::fingerprint::user_agent(&version),
+        ),
     ];
     let response = send_raw("GET", &url, None, &headers, None, Some(CATALOG_TIMEOUT_MS))
         .await

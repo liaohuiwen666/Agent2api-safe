@@ -43,7 +43,7 @@ use crate::http::send_raw;
 use crate::logging;
 
 use super::credentials::from_record;
-use super::endpoints::{REQUEST_TIMEOUT_MS, USER_AGENT, profile_summary_url};
+use super::endpoints::{REQUEST_TIMEOUT_MS, profile_summary_url};
 use super::oauth::unwrap_envelope;
 
 /// 保留两位小数（服务端的浮点噪声如 `55.67000031` 在几份求和后会显形）
@@ -202,18 +202,32 @@ pub async fn query_usage(
 ) -> Result<Value, GatewayError> {
     let record = crate::store::record(ctx, super::ID, account_id).await?;
     let credentials = from_record(Some(&record))?;
+    let version = super::chat::client_version_header();
 
+    // 官方 `/api/user/profile-summary` 是**带归因 query** 的 GET（设计文档 FR-11
+    // 与 `main.ts:8599` 的 `withKeyfromQuery`）：`firstKeyfrom` / `latestKeyfrom` /
+    // `uuid` / `version` / `userId` 都在 query 上。旧实现只打了裸路径 —— 那是
+    // 「官方客户端不会这么打」的形态，一并补齐（拼法复用目录那条，同一份载荷件）。
+    let url = format!(
+        "{}?{}",
+        profile_summary_url(),
+        super::models::keyfrom_query(&credentials, &version)
+    );
+
+    // `Accept` 由 `send_raw` 补；UA 与版本头同一份 CalVer。
     let headers: Vec<(String, String)> = vec![
         (
             "authorization".to_string(),
             format!("Bearer {}", credentials.access_token),
         ),
-        ("accept".to_string(), "application/json".to_string()),
-        ("user-agent".to_string(), USER_AGENT.to_string()),
+        (
+            "user-agent".to_string(),
+            super::fingerprint::user_agent(&version),
+        ),
     ];
     let response = send_raw(
         "GET",
-        &profile_summary_url(),
+        &url,
         None,
         &headers,
         None,

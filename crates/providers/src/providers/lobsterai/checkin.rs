@@ -43,7 +43,7 @@ use crate::logging;
 use super::chat;
 use super::credentials::{LobsterCredentials, from_record};
 use super::endpoints::{
-    REQUEST_TIMEOUT_MS, USER_AGENT, activity_checkin_url, activity_context_url, activity_slot_url,
+    REQUEST_TIMEOUT_MS, activity_checkin_url, activity_context_url, activity_slot_url,
 };
 use super::oauth::unwrap_envelope;
 use crate::ids::uuid_v4;
@@ -198,14 +198,17 @@ async fn request_json(
     body: Option<&Value>,
     what: &str,
 ) -> Result<Value, GatewayError> {
+    // `Accept` / `Content-Type` 由 `send_raw` 补（见 `oauth::post_anonymous` 的说明：
+    // 再写一遍会变成重复头）；这里只留鉴权与 UA。UA 与版本头同一份 CalVer。
     let headers: Vec<(String, String)> = vec![
         (
             "authorization".to_string(),
             format!("Bearer {}", credentials.access_token),
         ),
-        ("accept".to_string(), "application/json".to_string()),
-        ("content-type".to_string(), "application/json".to_string()),
-        ("user-agent".to_string(), USER_AGENT.to_string()),
+        (
+            "user-agent".to_string(),
+            super::fingerprint::user_agent(&super::chat::client_version_header()),
+        ),
     ];
     let response = send_raw(method, url, body, &headers, None, Some(REQUEST_TIMEOUT_MS))
         .await

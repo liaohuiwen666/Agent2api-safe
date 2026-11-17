@@ -31,6 +31,16 @@
 //!   2. 信封 `code == 0` 但 `data` 为 null → **令牌已失效**（参考实现实测）。
 //!      这一条最容易漏：只看 HTTP 状态或只看 `code` 都会把它当成成功。
 //!
+//! ── 五个归因字段：两个 keyfrom 恒为 `official`，`uuid` 一次生成终身复用 ─
+//! 官方客户端在 `/api/auth/exchange` 的体里追加的就是这五个（设计文档 FR-11）：
+//! `{ authCode, firstKeyfrom, latestKeyfrom, uuid, version[, userId] }`，其中
+//! `firstKeyfrom = latestKeyfrom = official`（官网包构建期固化的渠道名）、
+//! `uuid` 是装机终身不变的 UUIDv4、`version` 与 `X-LobsterAI-Client-Version` 同值。
+//!
+//! ⚠️ 旧实现把 `keyfrom` 填成**登录时刻的毫秒时间戳** —— 那既不是渠道名，
+//! 又与「只写一次、之后永不变化」的官方语义相反（每次登录/续期都变）。
+//! 现在恒发 [`super::fingerprint::OFFICIAL_KEYFROM`]，见 `fingerprint.rs` 模块头。
+//!
 //! ── 硬约束 ──────────────────────────────────────────────────
 //! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
 
@@ -47,10 +57,8 @@ use crate::errors::GatewayError;
 use crate::logging;
 
 use super::credentials::LobsterCredentials;
-use super::endpoints::{
-    CALLBACK_PATH, EXCHANGE_PATH, REQUEST_TIMEOUT_MS, REFRESH_PATH, USER_AGENT, api_base,
-    portal_base, urlencode,
-};
+use super::endpoints::{CALLBACK_PATH, EXCHANGE_PATH, REQUEST_TIMEOUT_MS, REFRESH_PATH, api_base, portal_base, urlencode};
+use super::fingerprint;
 
 /// 本网关的 loopback 回调路径（见模块头：跟随参考实现的裸路径）
 pub const LOOPBACK_CALLBACK_PATH: &str = CALLBACK_PATH;
@@ -304,8 +312,12 @@ pub fn parse_token_bundle(data: &Value) -> Result<TokenBundle, GatewayError> {
 
 /// 用授权码换令牌（**不带 Authorization**）。
 ///
-/// 体固定五个字段：`authCode` + 两个 keyfrom + `uuid` + `version`。
+/// 体固定五个字段：`authCode` + `firstKeyfrom` + `latestKeyfrom` + `uuid` + `version`。
 /// `uuid` 由调用方生成并**落盘**（续期要它）—— 它不是凭据，是这一台「客户端」的标识。
+///
+/// 两个 keyfrom 一律 [`fingerprint::OFFICIAL_KEYFROM`]（官方包固化的渠道名）；
+/// 调用方传进来的值也会再过一次 [`fingerprint::normalize_keyfrom`]，避免
+/// 「调用方手滑传了个时间戳」再次把这条指纹弄坏。
 pub async fn exchange(
     auth_code: &str,
     uuid: &str,
@@ -315,12 +327,12 @@ pub async fn exchange(
 ) -> Result<TokenBundle, GatewayError> {
     let body = json!({
         "authCode": auth_code,
-        "firstKeyfrom": first_keyfrom,
-        "latestKeyfrom": latest_keyfrom,
+        "firstKeyfrom": fingerprint::normalize_keyfrom(first_keyfrom),
+        "latestKeyfrom": fingerprint::normalize_keyfrom(latest_keyfrom),
         "uuid": uuid,
         "version": client_version,
     });
-    let payload = post_anonymous(EXCHANGE_PATH, &body, "换码").await?;
+    let payload = post_anonymous(EXCHANGE_PATH, &body, "换码", client_version).await?;
     let data = unwrap_envelope(&payload, "换码")?;
     parse_token_bundle(&data)
 }
@@ -344,23 +356,38 @@ pub async fn refresh(
         "refreshToken".to_string(),
         Value::String(credentials.refresh_token.clone()),
     );
-    let payload = post_anonymous(REFRESH_PATH, &Value::Object(body), "续期").await?;
+    let payload = post_anonymous(REFRESH_PATH, &Value::Object(body), "续期", client_version).await?;
     let data = unwrap_envelope(&payload, "续期")?;
     parse_token_bundle(&data)
 }
 
-/// 发一次匿名 POST（换码与续期都不带 Authorization）
-async fn post_anonymous(path: &str, body: &Value, what: &str) -> Result<Value, GatewayError> {
+/// 发一次匿名 POST（换码与续期都不带 Authorization）。
+///
+/// ── 头集合为什么只有三条 ────────────────────────────────────
+/// 官方 auth 接口的请求头就是「Bearer 登录前没有 → 只剩内容类型 / UA / 语言」这
+/// 几条（`main.ts:6085-6100` 的 `authSessionManager.fetch`），**不带**
+/// `X-LobsterAI-Client-Capabilities`（那个头只挂在 `/api/models/available` 与
+/// 转发路径上）。所以这里**故意不加**能力位头 —— 多一个头同样是破绽。
+///
+/// `Accept` / `Content-Type` 不在这里手写：`send_raw` 已经无条件补
+/// `Accept: application/json`，带 body 时再补 `Content-Type: application/json`；
+/// 用 reqwest 的 `header()` 再写一遍会变成**重复头**（`application/json,
+/// application/json`）—— 那也是官方端不会出现的形态。
+async fn post_anonymous(
+    path: &str,
+    body: &Value,
+    what: &str,
+    client_version: &str,
+) -> Result<Value, GatewayError> {
     let url = format!("{}{}", api_base(), path);
     let response = send_raw(
         "POST",
         &url,
         Some(body),
-        &[
-            ("accept".to_string(), "application/json".to_string()),
-            ("content-type".to_string(), "application/json".to_string()),
-            ("user-agent".to_string(), USER_AGENT.to_string()),
-        ],
+        &[(
+            "user-agent".to_string(),
+            fingerprint::user_agent(client_version),
+        )],
         None,
         Some(REQUEST_TIMEOUT_MS),
     )
