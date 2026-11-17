@@ -1,160 +1,151 @@
-# Agent2Providers
+<div align="center">
 
-**English** · [简体中文](README.zh-CN.md)
+# Agent2Providers · Safe Fork
 
-**Provider Enhancement** (提供商增强) is the official provider plugin for [Agent2API](https://github.com/aimod-cc/Agent2API).
-It supplies provider-specific sign-in and account import, model requests, credential
-renewal, model catalogs, balances and check-in. Available capabilities vary by provider.
-The gateway loads the plugin as a separate process, so a fault in one provider
-takes down that process and nothing else.
+**基于官方 providers 插件源码的加固分支** — HTTP 身份对齐官方客户端 · 签到避让调度 · 可复现构建
 
-This repository also carries the two crates the gateway compiles against:
-`agent2api-provider-protocol` (the wire types) and `agent2api-provider-sdk`
-(the `Provider` trait and its serve loop). The gateway depends on this
-repository by tag.
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](./LICENSE)
+[![Upstream](https://img.shields.io/badge/upstream-3.5.0--beta.1--same--source-2ea44f)](https://github.com/ProvidersPlugin/Agent2Providers)
+[![fx](https://img.shields.io/badge/fx--series-fx1→fx2→fx3-orange)](#-改动清单)
+[![Tests](https://img.shields.io/badge/tests-27%2F27-success)](#-验证)
 
-## Supported Providers
+</div>
 
-Capabilities supplied by Provider Enhancement. The table lists the currently enabled Rust integrations. Static model catalogs, usage and plan information are not equivalent to online catalogs or monetary balances.
+---
 
-| Platform | LLM requests | Token auto-refresh | Model list | Balance query | Check-in | Claims |
-| --- | :--: | :--: | :--: | :--: | :--: | :--: |
-| WorkBuddy (China) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| WorkBuddy (Global) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
-| Raccoon | ✓ (chat / generation / reference editing) | ✓ (legacy credentials; IAM requires sign-in) | ✓ | ✓ | ✓ | ✓ (first-login rewards) |
-| CatPaw | ✓ | ✗ | ✓ | ✓ | ✗ | — |
-| AutoClaw (domestic / international) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Qoder | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| QwenWork (China / International) | ✓ | ✓ | ✓ | ✓ | ✗ | — |
-| Cline (Free / Pass) | ✓ | ✓ | ✓ | ✓ | — | — |
-| Accio (international / domestic) | ✓ | ✓ | ✓ | ✓ | — | — |
-| ZCode (domestic / international) | ✓ | ✗ | ✗ | ✓ | — | ✓ |
-| CodeArts | ✓ | ✓ | ✓ | ✓ | — | ✓ |
-| Trae | ✓ | ✓ | ✓ | ✓ | ✓ | Not provided by this plugin |
-| Loomy (iFlytek) | ✓ (chat / image generation / reference editing) | ✗ | ✓ | ✓ | ✓ | — |
-| KukuAI (Baidu Wenku) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
-| MonkeyCode (Chaitin, domestic / international) | ✓ | ✗ | ✓ | — | — | — |
-| Command Code | ✓ | ✗ | ✓ | — | — | — |
-| Antigravity (Google, Gemini / Claude / GPT-OSS) | ✓ (chat / image generation / reference editing) | ✓ | ✓ | — | — | — |
-| OfficeAce (Huawei Cloud, OfficeClaw) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| OrcaTerm (Tencent Cloud) | ✓ | ✓ | ✓ | ✓ | — | — |
-| ModelScope (MoDa, domestic / international) | ✓ | ✗ | ✓ | ✓ | ✓ | — |
-| AtomCode (AtomGit / GitCode) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LobsterAI (NetEase Youdao, Youdao Lobster) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Doubao Work | Implemented; unverified (chat / image generation) | ✗ | Implemented; unverified | Implemented; unverified | Implemented; unverified | Implemented; unverified |
-| Kiro | ✓ (chat / tools / thinking / image input) | ✓ | ✓ | ✓ | ✗ | — |
-| AStudio (iFlytek Astron Studio) | ✓ (chat / tools / thinking / image input) | ✗ | ✓ | ✓ | ✓ (daily sign-in credits) | — |
+## 为什么有这个 fork
 
-Custom providers remain a gateway feature and do not require this plugin. They support model requests and model-list fetching; other capabilities depend on the service you configure. API account creation skips a second proxy save only for `proxySaved: true`; older gateways retain a compatibility save and verification warning. Failure does not remove an added account or falsely report that its proxy was saved.
+官方插件包的出站请求在**应用层**存在多处自曝特征，风控一眼可辨：
 
-> Note: model-list markers cover online fetching or static catalogs as specified by each row and implementation. Missing refresh or usage hooks do not establish that the upstream lacks an endpoint. Qoder check-in is China-version only; QwenWork has **no** check-in endpoint on either edition (nor a personal access token or claimable campaigns — those three genuinely do not exist upstream, rather than being "not implemented yet").
->
-> QwenWork sign-in: the **China edition** uses the official OAuth page (authorization code with a loopback callback, the same route the official CLI / IDE takes) and the account joins the list by itself. The **international edition is hidden from the list** (2026-11-03). Its chat and usage paths work, but sign-in is blocked upstream: the upstream accepts only its own registered callback address, so the code never reaches this machine, and its device-code endpoint has been retired — an account simply cannot be added. The code stays in place; removing the id from the gateway's suspended list (`availability.rs`) re-enables it.
->
-> Kiro: browser sign-in goes through the Kiro portal (Google / GitHub / AWS Builder ID / IAM Identity Center) and the callback lands on a loopback port, so the gateway and the browser must be on the same machine. For remote deployments use "import the kiro-cli / Kiro IDE sign-in" or an API key. The upstream has no daily check-in and no claimable campaigns.
-> AStudio: model calls use OpenAI Responses; balance and daily sign-in credits require the account to carry a web session. Two sign-in routes: phone code or account/password on the in-app local sign-in page (sending a code and password sign-in require the GeeTest slider; the gateway and the browser must share one machine), or paste a `modelBearerToken` (fill `token` and `accountId` too for balance and check-in). Credentials can only be re-logged-in or re-pasted — the upstream has no refresh endpoint.
+| 自曝点 | 官方包行为 | 本仓库行为 |
+|---|---|---|
+| 全局默认 UA | `undici`（Node.js fetch 标识） | Chrome/147 浏览器形态 |
+| LobsterAI UA | `LobsterAI/0.1.0`（真实客户端是 Electron） | Electron/43.5.0 形态 |
+| keyfrom 归因 | 登录时间戳（每次不同，可聚类识别） | 官方常量 `official` |
+| 版本头 | 三处矛盾（2026.9.4 / 2026.11.6） | 统一 `2026.11.16`（与官方更新接口同步） |
+| 同供应商签到 | 多账号背靠背（实测间隔 22 秒） | 同家间隔 ≥30 分钟 + 随机抖动 |
 
-## Building
+设计原则：**只改"长什么样"，不改"做什么"** — 业务语义、接口行为、数据格式零变更。
 
-```bash
-cargo build --release            # current platform
-node scripts/pack.mjs            # produce an installable zip (runs the build above)
+> 背景议题：[aimod-cc/Agent2API#590](https://github.com/aimod-cc/Agent2API/issues/590)
+
+## HTTP 层适配矩阵
+
+### ① 逐家深度适配
+
+| Provider | 适配内容 | 来源 |
+|---|---|---|
+| **lobsterai** | UA → Electron/43.5.0、keyfrom → `official`、版本头三处统一 2026.11.16、Capabilities 官方四段、W3C traceparent、`x-lobster-*` 归因头 | fx1 |
+| **modelscope** | 网页会话补 Chrome UA + `Referer`/`Origin` + `sec-fetch-*` + `Accept`（此前仅有 Cookie 一项头，签到/余额/用量全走此通道） | fx2 |
+
+### ② 全局默认身份（fx2 共享层，一处覆盖全部）
+
+`http.rs` 共享客户端默认身份 `undici` → **Chrome/147 + Accept-Language**。所有未显式声明 UA 的请求自动升级，直接受益（签到/余额路径原本裸奔 undici）：
+
+```
+autoclaw · loomy · codearts · astudio · officeace
 ```
 
-The zip lands in `dist/agent2api-providers-<version>-<target>.zip`.
+### ③ 上游已有显式 UA（保留不动）
 
-To build for another target, prepare the toolchain yourself and name it:
+以下 provider 上游已对齐各自官方客户端形态（VSCode UA、独立标识、浏览器串等），本仓库**不覆盖、保持原样**：
 
-```bash
-cargo build --release --target aarch64-unknown-linux-gnu
-node scripts/pack.mjs --skip-build --target aarch64-unknown-linux-gnu
+```
+trae(VSCode) · accio(独立标识) · qoder · kiro · antigravity · kuku
+monkeycode · orcaterm · commandcode · zcode · workbuddy · doubaowork
 ```
 
-The script only turns an already-built binary into a zip. It does no cross
-compilation — that needs mingw / osxcross / musl toolchains, and folding them
-in would add a branch that can only fail. Multiple platforms are the CI
-matrix's job (`.github/workflows/build.yml`, one job per platform).
+### ④ 边界（明确不适用）
 
-## Every platform needs its own package
-
-A plugin is a native executable that the gateway starts directly, so each
-OS-and-architecture pair needs its own binary. `pack.json` declares five:
-
-| Target triple | Covers |
+| 范围 | 原因 |
 |---|---|
-| `x86_64-pc-windows-msvc` | Windows desktop (x64) |
-| `x86_64-apple-darwin` | macOS on Intel |
-| `aarch64-apple-darwin` | macOS on Apple Silicon |
-| `x86_64-unknown-linux-gnu` | Linux desktop amd64, Docker amd64 |
-| `aarch64-unknown-linux-gnu` | Docker arm64 |
+| atomcode | 线上部署使用独立闭源 wasm 包，本仓库实现不生效 |
+| custom providers | 由网关核心直连，不经插件出站 |
+| **TLS / JA3 层** | 全部 provider 仍为 rustls 裸奔（见 Roadmap） |
 
-The gateway checks that the current platform's entry point is in the package
-and refuses one that lacks it. Update checks match the asset name
-`<id>-<version>-<target>.zip` exactly, so the platform segment cannot be
-dropped from the filename.
+## 签到避让（fx3）
 
-**Both Linux packages build against the bookworm generation.** The Docker
-runtime image is `debian:bookworm-slim` (glibc 2.36). A binary built on a newer
-distribution (Ubuntu 24.04, glibc 2.39) requires a newer glibc and fails inside
-the container with a dynamic-linker error. CI builds both Linux targets on
-Ubuntu 22.04 runners (glibc 2.35), which stays below the runtime image and
-therefore runs on it.
+SDK 层机制（`provider-sdk/src/checkin.rs`，全部 24 家共用），解决同供应商多账号在宿主窗口内背靠背的问题：
 
-## Signing (optional)
+```
+规则：同家其它账号的 max(上次触碰, 计划占用) + 30min 之内不开签
+      叠加 0–10 分钟随机抖动；被推迟账号经 CheckinResult.retry_at 由宿主自动重排
+```
+
+| 特性 | 行为 |
+|---|---|
+| 执行位置 | `checkin::run()` 门槛，**先于 token 刷新**——被推迟账号零上游痕迹 |
+| manual 触发 | 面板手动签到直接放行（但记账） |
+| 状态过期 | 6 小时，跨天自然失效，不影响宿主补签轮 |
+| 计划稳定性 | 自己已有 `planned` 未到点 → 按既定计划走，不重新随机 |
+| 加号 | 实时读取账号列表，新号零配置自动纳入错峰链 |
+| 完成保证 | 宿主补签轮兜底，全部账号当天完成 |
+
+> ⚠️ 例外：**整点抢额度型平台**加 2+ 号时，第 2 号起会被推迟 30 分钟，可能错过窗口——此类平台需在 SDK 中加入豁免常量（一行）。每日额度型平台无此问题。
+
+## 快速开始
 
 ```bash
-node scripts/sign.mjs keygen                                    # once
-node scripts/sign.mjs sign --zip dist/agent2api-providers-*.zip
+# 构建（Ubuntu 22.04 / glibc ≤ 2.36 宿主机，x86_64）
+git clone https://github.com/liaohuiwen666/Agent2api-safe.git
+cd Agent2api-safe
+./build-fx.sh                     # 产物: dist/agent2api-providers
+
+# 安装为独立版本目录（官方目录不动，可随时回滚）
+cd install-kit
+./install.sh --home <agent2api-data-dir> \
+             --version <上游版本>-fx3 \
+             --binary ../dist/agent2api-providers
+
+# 重启网关，日志应出现:
+#   插件包「agent2api-providers」v*-fx3 已加载
+
+# 回滚
+./install.sh --home <agent2api-data-dir> --rollback
 ```
 
-The private key goes to `~/.agent2api/plugin-signing-key.json` by default (or
-wherever `--key` / `AGENT2API_PLUGIN_KEY` points) and **never** enters the
-repository. Signing is ed25519 over the package contents — id, version,
-protocol, target, providers, entry points and the entry binary's sha256 — not
-over the zip bytes. After generating a key, put the printed public key into the
-gateway's `OFFICIAL_PUBKEYS` (`plugin_host/install.rs`); otherwise the gateway
-does not trust it and refuses the install as an invalid signature.
+低内存构建参数已内置（1.6GB RAM 可跑）：LTO off、codegen-units=8、可选 mold 链接器；国内环境建议 rsproxy + USTC 镜像。
 
-An unsigned package installs and works normally. The interface marks it
-"unsigned" in amber, which only means the origin cannot be proven.
+## 与官方更新并存
 
-## Verifying
+本包以 `signed: false` 本地包身份安装：
+
+- 网关不做 ed25519 验签，直接接受加载（官方 beta 网关实测通过）
+- **不会被官方自动更新覆盖**
+- 跟进上游：`git fetch upstream && git rebase upstream/main`（fx 提交均为小补丁集，冲突面极小）
+
+## 验证
 
 ```bash
-cargo build --release
-node scripts/verify.mjs          # defaults to the binary under target/release
-node scripts/verify.mjs --exe path/to/agent2api-providers
+cargo test -p agent2api-providers     # 19/19 · provider 层（含 LobsterAI wire 断言）
+cargo test -p agent2api-provider-sdk  # 8/8  · 签到避让（含复现 22 秒背靠背场景）
 ```
 
-The script acts as the gateway and runs the protocol against the plugin binary:
-init, requests, streaming, backpressure, cancellation, callbacks and crash
-recovery. All 28 checks must pass.
+TLS 指纹验证（Roadmap 落地后）：`tls.peet.ws` 对比改造前后 JA3 / JA4 / JA4H。
 
-Every CI platform job runs it — **compiling is not the same as running**. A
-missing shared library, a missing executable bit or a wrong path only shows up
-at startup, so each platform's binary is started once on its own machine
-before the package is produced.
+## Roadmap
 
-## The two shared crates
+- [ ] **TLS 指纹伪装**（务实档）：依赖 `reqwest → rquest` 全局替换（BoringSSL），共享层 4 个构建点 + 全员 Chrome profile；验证 peet.ws JA3/JA4
+- [ ] 抢额度型平台签到豁免配置化
+- [ ] 上游 PR 反哺（HTTP 身份修复可提交回 [ProvidersPlugin/Agent2Providers](https://github.com/ProvidersPlugin/Agent2Providers)）
 
-- `agent2api-provider-protocol` — the wire types (the contract); the gateway
-  and every plugin compile it
-- `agent2api-provider-sdk` — the `Provider` trait and the `serve()` loop
+## 改动清单
 
-Both live under `crates/` here, and `crates/providers/Cargo.toml` refers to
-them by relative path inside the workspace. A protocol change takes effect
-locally without a release.
-
-The gateway refers to the same repository **by tag**:
-
-```toml
-agent2api-provider-protocol = { git = "https://github.com/ProvidersPlugin/Agent2Providers", tag = "v0.2.1" }
+```
+7322c30  fx3: SDK 同供应商签到避让——同家账号间隔≥30分钟+0~10分钟抖动
+a088c96  fx2: 全线 HTTP 身份补齐——消灭 undici 自曝（共享层默认身份 + modelscope 浏览器头）
+13b2f56  fx:  仓库脚手架——构建脚本、安装钩子、说明文档
+5a5de37  fx:  LobsterAI 官方客户端指纹对齐 + 兜底版本 2026.11.16
 ```
 
-So a contract change reaches the gateway only after a new tag and an updated
-line there. Changing the local copy alone leaves the gateway compiling against
-the old contract; a field mismatch may still compile and fail at runtime.
+详细变更说明见 [README-FX.md](./README-FX.md)。
 
-## License
+## 来源与许可
 
-AGPL-3.0
+| 仓库 | 角色 |
+|---|---|
+| [aimod-cc/Agent2API](https://github.com/aimod-cc/Agent2API) | 网关核心（本仓库不修改，上游仅引用） |
+| [ProvidersPlugin/Agent2Providers](https://github.com/ProvidersPlugin/Agent2Providers) | **上游源码**（本仓库的直接基础） |
+| [free6589/agent2api-lobsterai-plugin](https://github.com/free6589/agent2api-lobsterai-plugin) | LobsterAI 适配参考实现（AGPL-3.0） |
+
+本项目及全部上游均以 **AGPL-3.0** 授权：自用无限制；对外提供服务须向使用者提供对应源码；分发须继续以 AGPL-3.0 开源。
