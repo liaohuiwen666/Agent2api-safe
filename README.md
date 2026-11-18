@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](./LICENSE)
 [![Upstream](https://img.shields.io/badge/upstream-3.5.0--beta.1--same--source-2ea44f)](https://github.com/ProvidersPlugin/Agent2Providers)
-[![fx](https://img.shields.io/badge/fx--series-fx1→fx2→fx3-orange)](#-改动清单)
+[![fx](https://img.shields.io/badge/fx--series-fx1→fx2→fx3→fx4→fx5-orange)](#-改动清单)
 [![Tests](https://img.shields.io/badge/tests-31%2F31-success)](#-验证)
 
 </div>
@@ -65,7 +65,7 @@ monkeycode · orcaterm · commandcode · zcode · workbuddy · doubaowork
 | custom providers | 由网关核心直连，不经插件出站 |
 | **TLS / JA3 层** | 全部 provider 仍为 rustls 裸奔（见 Roadmap） |
 
-## 签到避让（fx3）
+## 签到避让（fx3，fx5 修订）
 
 SDK 层机制（`provider-sdk/src/checkin.rs`，全部 24 家共用），解决同供应商多账号在宿主窗口内背靠背的问题：
 
@@ -74,6 +74,10 @@ SDK 层机制（`provider-sdk/src/checkin.rs`，全部 24 家共用），解决�
       叠加 0–10 分钟随机抖动；被推迟账号经 CheckinResult.retry_at 由宿主自动重排
 ```
 
+**fx5 修订（2026-11-18）**：推迟改报 `Inactive`（宿主只登记中性 outcome 的
+retry_at，`Failed` 不排重试——11-18 凌晨 12 个第 2 号未获重试的根因）；
+`planned` 到点直接放行（不再被第 3+ 号的未来计划顶开）；retry_at 垫底 ≥10min。
+
 | 特性 | 行为 |
 |---|---|
 | 执行位置 | `checkin::run()` 门槛，**先于 token 刷新**——被推迟账号零上游痕迹 |
@@ -81,7 +85,7 @@ SDK 层机制（`provider-sdk/src/checkin.rs`，全部 24 家共用），解决�
 | 状态过期 | 6 小时，跨天自然失效，不影响宿主补签轮 |
 | 计划稳定性 | 自己已有 `planned` 未到点 → 按既定计划走，不重新随机 |
 | 加号 | 实时读取账号列表，新号零配置自动纳入错峰链 |
-| 完成保证 | 宿主补签轮兜底，全部账号当天完成 |
+| 完成保证 | 宿主按 retry_at 自动重排（fx5：中性 outcome 才登记）+ 补签轮兜底 |
 
 > ⚠️ 例外：**整点抢额度型平台**加 2+ 号时，第 2 号起会被推迟 30 分钟，可能错过窗口——此类平台需在 SDK 中加入豁免常量（一行）。每日额度型平台无此问题。
 
