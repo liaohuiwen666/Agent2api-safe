@@ -29,14 +29,15 @@ use serde_json::Value;
 /// 控制面请求的超时（目录 / 余额 / 签到这类小请求）。
 pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
 
-// 默认身份：浏览器形态的 UA + Accept-Language。
-//
-// ── 为什么不再用 undici（2026-11 全线补齐）────────────────────
-// undici 是 Node 的 fetch 标识，等于自报「我是脚本」：accio 侧 2026-09 被
-// 上游用「HTTP 200 + HTML 挑战页」识别过（见 accio/endpoints.rs:82），trae
-// 也明确要求「UA 必须显式给」（见 trae/profile.rs:152）。请求级头仍可覆盖
-// 此默认值；显式声明了自家 UA 的 provider 不受影响。
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+/// 共享浏览器 UA：控制面客户端的默认身份，也是走 plan 的聊天请求的 UA。
+///
+/// 聊天 plan 由核心 egress 原样转发 plan 里的头，核心默认 UA 是 `undici`
+/// （见 trae/profile.rs:152 的注释），所以 plan 里不带 User-Agent 的聊天
+/// 请求仍自曝 —— fx2 只修了控制面，聊天要逐条补 UA（autoclaw / loomy /
+/// officeace / modelscope / raccoon 各在自己的 plan 里带上这一份）。
+/// 已经走插件自有客户端的聊天（astudio / codearts / catpaw）直接用这个
+/// 默认身份，不用再补。
+pub(crate) const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
 
 /// 浏览器固定会带的语言头；缺失它是一处廉价特征。
 const DEFAULT_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
@@ -379,4 +380,18 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_user_agent_is_a_browser_ua() {
+        // fx2 的底线：共享默认身份必须是浏览器形态，绝不能是 undici。
+        // 控制面客户端与聊天 plan 都用这一份，改回 undici 会让两路同时自曝。
+        assert!(DEFAULT_USER_AGENT.starts_with("Mozilla/5.0"), "{DEFAULT_USER_AGENT}");
+        assert!(DEFAULT_USER_AGENT.contains("Chrome/"), "{DEFAULT_USER_AGENT}");
+        assert!(!DEFAULT_USER_AGENT.contains("undici"), "{DEFAULT_USER_AGENT}");
+    }
 }

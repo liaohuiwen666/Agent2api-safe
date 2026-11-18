@@ -252,6 +252,10 @@ impl Provider for AutoClawProvider {
                 ("Content-Type".to_string(), "application/json".to_string()),
                 // 源实现给的是 `Accept: */*`（LLM 代理两种响应形态都可能回）
                 ("Accept".to_string(), "*/*".to_string()),
+                // 聊天走 plan：UA 必须显式带（核心 egress 默认是 undici，
+                // 见 http::DEFAULT_USER_AGENT 的注释）。官方客户端是
+                // Electron，但代码里没有逐字符可考的 UA，先用共享浏览器 UA。
+                ("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()),
             ];
             headers.extend(brand_headers());
             headers.push((

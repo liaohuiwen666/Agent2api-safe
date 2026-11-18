@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](./LICENSE)
 [![Upstream](https://img.shields.io/badge/upstream-3.5.0--beta.1--same--source-2ea44f)](https://github.com/ProvidersPlugin/Agent2Providers)
 [![fx](https://img.shields.io/badge/fx--series-fx1→fx2→fx3-orange)](#-改动清单)
-[![Tests](https://img.shields.io/badge/tests-27%2F27-success)](#-验证)
+[![Tests](https://img.shields.io/badge/tests-31%2F31-success)](#-验证)
 
 </div>
 
@@ -22,7 +22,7 @@
 | 全局默认 UA | `undici`（Node.js fetch 标识） | Chrome/147 浏览器形态 |
 | LobsterAI UA | `LobsterAI/0.1.0`（真实客户端是 Electron） | Electron/43.5.0 形态 |
 | keyfrom 归因 | 登录时间戳（每次不同，可聚类识别） | 官方常量 `official` |
-| 版本头 | 三处矛盾（2026.9.4 / 2026.11.6） | 统一 `2026.11.16`（与官方更新接口同步） |
+| 版本头 | 两处值矛盾（2026.9.4 / 2026.11.6） | 同源 `2026.11.16`（各请求按需携带，取值同一份已解析版本） |
 | 同供应商签到 | 多账号背靠背（实测间隔 22 秒） | 同家间隔 ≥30 分钟 + 随机抖动 |
 
 设计原则：**只改"长什么样"，不改"做什么"** — 业务语义、接口行为、数据格式零变更。
@@ -35,8 +35,8 @@
 
 | Provider | 适配内容 | 来源 |
 |---|---|---|
-| **lobsterai** | UA → Electron/43.5.0、keyfrom → `official`、版本头三处统一 2026.11.16、Capabilities 官方四段、W3C traceparent、`x-lobster-*` 归因头 | fx1 |
-| **modelscope** | 网页会话补 Chrome UA + `Referer`/`Origin` + `sec-fetch-*` + `Accept`（此前仅有 Cookie 一项头，签到/余额/用量全走此通道） | fx2 |
+| **lobsterai** | UA → Electron/43.5.0、keyfrom → `official`、版本同源 2026.11.16（对话：版本头＋UA；鉴权：body.version＋UA；目录：URL＋版本头＋UA）、Capabilities 官方四段、W3C traceparent、`x-lobster-*` 归因头 | fx1 |
+| **modelscope** | 网页会话补 Chrome UA + `Referer` + `sec-fetch-*` + `Accept`（同源 GET 不带 `Origin`；此前仅有 Cookie 一项头，签到/余额/用量全走此通道） | fx2 |
 
 ### ② 全局默认身份（fx2 共享层，一处覆盖全部）
 
@@ -45,6 +45,8 @@
 ```
 autoclaw · loomy · codearts · astudio · officeace
 ```
+
+聊天是另一条路：走插件自有客户端的聊天（astudio / codearts / catpaw）直接用上面这份默认身份；走 plan 的聊天（autoclaw / loomy / officeace / modelscope / raccoon）在 plan 里逐条带同一份 Chrome/147 UA —— 核心 egress 默认是 `undici`，plan 里不带就自曝。
 
 ### ③ 上游已有显式 UA（保留不动）
 
@@ -92,16 +94,15 @@ cd Agent2api-safe
 ./build-fx.sh                     # 产物: dist/agent2api-providers
 
 # 安装为独立版本目录（官方目录不动，可随时回滚）
-cd install-kit
-./install.sh --home <agent2api-data-dir> \
+./tools/install-lobsterai-fix.sh --home <agent2api-data-dir> \
              --version <上游版本>-fx3 \
-             --binary ../dist/agent2api-providers
+             --binary dist/agent2api-providers
 
 # 重启网关，日志应出现:
 #   插件包「agent2api-providers」v*-fx3 已加载
 
 # 回滚
-./install.sh --home <agent2api-data-dir> --rollback
+./tools/install-lobsterai-fix.sh --home <agent2api-data-dir> --rollback
 ```
 
 低内存构建参数已内置（1.6GB RAM 可跑）：LTO off、codegen-units=8、可选 mold 链接器；国内环境建议 rsproxy + USTC 镜像。
@@ -117,8 +118,8 @@ cd install-kit
 ## 验证
 
 ```bash
-cargo test -p agent2api-providers     # 19/19 · provider 层（含 LobsterAI wire 断言）
-cargo test -p agent2api-provider-sdk  # 8/8  · 签到避让（含复现 22 秒背靠背场景）
+cargo test -p agent2api-providers     # 22/22 · provider 层（含 LobsterAI wire 断言与聊天 UA 断言）
+cargo test -p agent2api-provider-sdk  # 9/9  · 签到避让（含复现 22 秒背靠背场景与抖动逐次不同）
 ```
 
 TLS 指纹验证（Roadmap 落地后）：`tls.peet.ws` 对比改造前后 JA3 / JA4 / JA4H。

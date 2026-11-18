@@ -129,6 +129,11 @@ impl Provider for RaccoonProvider {
                 // 源实现给的是 `Accept: */*`（LLM 网关两种响应形态都可能回）
                 ("Accept".to_string(), "*/*".to_string()),
                 ("Authorization".to_string(), format!("Bearer {token}")),
+                // 聊天走 plan：UA 必须显式带（核心 egress 默认是 undici，
+                // 见 http::DEFAULT_USER_AGENT 的注释）。桌面端身份头
+                // （X-Client-*）不是 HTTP UA；代码里没有逐字符可考的官方
+                // UA，先用共享浏览器 UA。
+                ("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()),
             ];
             headers::append_org(&mut headers, &org_code)?;
             // 对话链路与 onboarding / balance / iam 带同一套桌面端身份头：

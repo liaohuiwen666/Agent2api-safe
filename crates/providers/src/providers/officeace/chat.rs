@@ -167,7 +167,47 @@ pub fn build_chat_plan(
             "Authorization".to_string(),
             basic_authorization(&credential.model_app_key, &credential.model_app_secret),
         ),
+        // 聊天走 plan：UA 必须显式带（核心 egress 默认是 undici，
+        // 见 http::DEFAULT_USER_AGENT 的注释）。代码里没有逐字符可考的
+        // 官方 UA，先用共享浏览器 UA。
+        ("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()),
     ];
     headers.extend(correlation_headers());
     Ok(ChatPlan { url, headers, body })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+// 测试里失败就该 panic：断言失败 = 这次修复不成立，显式放宽 expect
+//（wire_tests.rs 同款做法）。
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_plan_carries_browser_user_agent() {
+        // 聊天走 plan：plan 里不带 UA，核心 egress 就按默认 undici 发。
+        let credential = OfficeAceCredential {
+            id: "test".to_string(),
+            base_url: "https://example.com".to_string(),
+            model_app_key: "key".to_string(),
+            model_app_secret: "secret".to_string(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            security_token: String::new(),
+            project_id: String::new(),
+            expires_at: 0,
+        };
+        let body = json!({
+            "model": "glm-5.3",
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let plan = build_chat_plan(&credential, &body).expect("凭据齐全时应当能建 plan");
+        let ua = plan
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("User-Agent"))
+            .map(|(_, value)| value.as_str())
+            .expect("聊天 plan 必须带 User-Agent");
+        assert_eq!(ua, crate::http::DEFAULT_USER_AGENT);
+    }
 }

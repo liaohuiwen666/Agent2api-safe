@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use agent2api_provider_protocol as proto;
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +96,26 @@ fn now_ms() -> Option<i64> {
         .map(|d| d.as_millis() as i64)
 }
 
+/// 逐次调用各不相同的抖动（毫秒，[0, STAGGER_JITTER_MS)）。
+///
+/// 不引 rand：SDK 只依赖 serde / tokio / protocol。SystemTime 纳秒与进程内
+/// 单调计数器混哈希 —— 同一毫秒内的连续调用也不会撞车（raccoon 的
+/// `request_id` 同款做法）。旧实现是 `now_ms() % JITTER`（时间推导的确定值），
+/// 同一毫秒内两次调用抖动必然相同，叫「随机」是错的。
+fn jitter_ms() -> i64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut state = nanos ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    state ^= state >> 33;
+    state = state.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    state ^= state >> 29;
+    (state % STAGGER_JITTER_MS as u64) as i64
+}
+
 fn parse_state(raw: serde_json::Value) -> Option<StaggerState> {
     serde_json::from_value::<StaggerState>(raw).ok()
 }
@@ -135,7 +157,10 @@ async fn stagger_gate(
         }
     }
 
-    let jitter = now_ms().map(|t| t % STAGGER_JITTER_MS).unwrap_or(0);
+    let jitter = jitter_ms();
+    // `mine.take()` 会把 mine 置空：Defer 分支要用的 `at` 必须先留出来，
+    // 否则下面读到的永远是 None、at 永远写成 now（fx3 的死逻辑）。
+    let mine_at = mine.as_ref().map(|s| s.at);
     match plan_stagger(now, mine.take(), &others, jitter) {
         StaggerGate::Proceed => {
             let state = serde_json::json!({ "at": now, "planned": null });
@@ -143,7 +168,7 @@ async fn stagger_gate(
             None
         }
         StaggerGate::Defer(planned) => {
-            let at = mine.as_ref().map(|s| s.at).unwrap_or(now);
+            let at = mine_at.unwrap_or(now);
             let state = serde_json::json!({ "at": at, "planned": planned });
             let _ = ctx.ledger_put(account, STAGGER_KIND, &state).await;
             let wait_min = (planned - now) / 60_000;
@@ -281,5 +306,15 @@ mod stagger_tests {
             }
             _ => panic!("planned 比 at 更近时应当按 planned 算"),
         }
+    }
+
+    #[test]
+    fn jitter_varies_per_call() {
+        // 抖动必须逐次调用各不相同：旧实现是 now_ms() % JITTER，
+        // 同一毫秒内两次调用必然相同。
+        let samples: Vec<i64> = (0..16).map(|_| jitter_ms()).collect();
+        assert!(samples.iter().all(|v| (0..STAGGER_JITTER_MS).contains(v)));
+        let distinct: std::collections::HashSet<i64> = samples.iter().copied().collect();
+        assert!(distinct.len() > 1, "抖动逐次调用应当不同");
     }
 }

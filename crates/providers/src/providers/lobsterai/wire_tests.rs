@@ -18,6 +18,12 @@
 //! `LOBSTERAI_API_BASE` 是进程级的，所以四条用例用一把锁串行（`ENV_LOCK`），
 //! 结束时清掉变量，避免污染别的用例。
 //!
+//! ── 版本接口不在 mock 里 ─────────────────────────────────
+//! 目录刷新会调一次官方更新接口取版本号（`CLIENT_VERSION_API`，
+//! `version::resolve_client_version`），那条 URL 不受 mock 覆盖：
+//! 有网时一次取到，离线时 30 秒超时后走兜底常量，测试照样通过，
+//! 只是整套测试要多等约 30 秒。失败结果按 TTL 缓存，同一进程里只等一次。
+//!
 //! ── 关于本文件里的 unwrap ───────────────────────────────
 //! 只在 `#[cfg(test)]` 下编译。crate 级的 `deny(clippy::unwrap_used)` 是为
 //! 发布代码设的；测试里失败就该 panic（断言失败 = 这次修复不成立），所以这里
@@ -364,8 +370,8 @@ fn chat_plan_carries_full_official_header_set() {
     assert_eq!(get("content-type"), "application/json");
     // 官方四段能力位（恒定量）
     assert_eq!(get("x-lobsterai-client-capabilities"), OFFICIAL_CAPABILITIES);
-    // 版本头是 CalVer；UA 里的版本 token 与它一致（三处一致里的两处，第三处是
-    // 账号侧 body.version，由 oauth 用例覆盖）
+    // 版本头是 CalVer；UA 里的版本 token 与它一致（对话请求只带这两处：
+    // 版本头＋UA；body.version 是鉴权请求才带的，由 oauth 用例覆盖）
     let version = get("x-lobsterai-client-version");
     assert!(!version.trim().is_empty(), "版本头不能为空");
     let ua = get("user-agent");

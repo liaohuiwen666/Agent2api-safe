@@ -75,6 +75,10 @@ pub(super) fn chat(
     let mut headers = tracking_headers(session, client_headers, "chat.message");
     headers.push(("Accept".to_string(), "text/event-stream".to_string()));
     headers.push(("loomy-version".to_string(), endpoints::client_version()));
+    // 聊天走 plan：UA 必须显式带（核心 egress 默认是 undici）。
+    // login.rs 的 CLIENT_UA 是登录体里的 `ua` 字段，不是 HTTP UA，
+    // 不能拿来当 User-Agent；先用共享浏览器 UA。
+    headers.push(("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()));
     headers
 }
 
@@ -85,4 +89,24 @@ pub(super) fn images(
     let mut headers = tracking_headers(session, client_headers, "image.generate");
     headers.push(("Accept".to_string(), "application/json".to_string()));
     headers
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+// 测试里失败就该 panic：断言失败 = 这次修复不成立，显式放宽 expect
+//（wire_tests.rs 同款做法）。
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_headers_carry_browser_user_agent() {
+        // 聊天走 plan：plan 里不带 UA，核心 egress 就按默认 undici 发。
+        let headers = chat("session", &BTreeMap::new());
+        let ua = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("User-Agent"))
+            .map(|(_, value)| value.as_str())
+            .expect("聊天 plan 必须带 User-Agent");
+        assert_eq!(ua, crate::http::DEFAULT_USER_AGENT);
+    }
 }

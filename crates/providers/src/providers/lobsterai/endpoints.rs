@@ -42,7 +42,8 @@
 //! ```
 //!
 //! UA 由 [`super::fingerprint::user_agent`] 统一生成：它的版本 token 用**同一个**
-//! 已解析版本，保证「body.version = 版本头 = UA 里的 `LobsterAI/<ver>`」三处一致。
+//! 已解析版本，三处取自同一份值（各请求按需携带：对话是版本头＋UA，鉴权是
+//! body.version＋UA，目录是 URL＋版本头＋UA）。
 //!
 //! ── 没有任何签名 ────────────────────────────────────────────
 //! 纯 `Bearer`。没有 HMAC / DPoP / PKCE，也没有腾讯系的 `X-Domain` /
@@ -50,7 +51,8 @@
 //! 错误的客户端形态上（参考实现的模块头原话）。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
+//! release 是 `panic = "unwind"`（workspace Cargo.toml）：panic 会被请求边界的
+//! `catch_unwind` 兜住，不会带走整个插件进程；本文件仍保持零 unwrap/expect/panic。
 
 /// 上游 API 主机（换码 / 续期 / 目录 / 对话 / 积分都在它下面）
 pub const API_BASE: &str = "https://lobsterai-server.youdao.com";
@@ -65,8 +67,8 @@ pub const CLIENT_VERSION_API: &str =
 
 /// 查不到版本时用的兜底值。
 ///
-/// 必须是一个**真实发布过的 CalVer**（当前官方 main 分支 `package.json` 的
-/// `2026.11.6`）：版本头是功能性头，空串或 `0.0.0` 会被按「不认识的客户端」
+/// 必须是一个**真实发布过的 CalVer**（当前官方最新发布 `2026.11.16`，兜底跟着
+/// 它走）：版本头是功能性头，空串或 `0.0.0` 会被按「不认识的客户端」
 /// 对待；`2026.9.4`（旧兜底）已经明显落后于官方当前发布版，也一并纠正。
 pub const FALLBACK_CLIENT_VERSION: &str = "2026.11.16";
 

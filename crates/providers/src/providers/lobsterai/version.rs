@@ -12,7 +12,8 @@
 //! 空版本头会被服务端按「不认识的客户端」对待。
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
+//! release 是 `panic = "unwind"`（workspace Cargo.toml）：panic 会被请求边界的
+//! `catch_unwind` 兜住，不会带走整个插件进程；本文件仍保持零 unwrap/expect/panic。
 
 use std::sync::{Mutex, OnceLock};
 
@@ -67,8 +68,14 @@ pub async fn resolve_client_version() -> String {
             Err(poisoned) => poisoned.into_inner(),
         };
         if let Some(entry) = guard.as_ref() {
-            if logging::now_ms() - entry.fetched_at < VERSION_CACHE_TTL_MS && !entry.value.is_empty()
-            {
+            if logging::now_ms() - entry.fetched_at < VERSION_CACHE_TTL_MS {
+                if entry.value.is_empty() {
+                    // 刚查过但失败：TTL 内不再探测，直接用兜底（Cache 的注释
+                    // 就是这个意思——旧代码要求 !is_empty()，空值每次调用都
+                    // 重新请求，更新接口挂掉时每次 lobsterai 请求都多一次
+                    // 30 秒超时）。
+                    return FALLBACK_CLIENT_VERSION.to_string();
+                }
                 return entry.value.clone();
             }
         }

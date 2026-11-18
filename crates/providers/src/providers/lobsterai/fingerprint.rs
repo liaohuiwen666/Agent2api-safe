@@ -2,13 +2,17 @@
 //!
 //! ── 这个文件为什么存在 ──────────────────────────────────────
 //! 本家的风控判的是「这条请求是不是官方桌面端发出的」。官方客户端的行为真值
-//! （官方源码 + 官方设计文档逐条对拍，见本仓 `research/lobsterai-official-fingerprint-baseline.md`）
+//! （官方源码 + 官方设计文档逐条对拍；对拍依据在 free6589 参考实现的 lobsterai
+//! 模块里，来源见 README —— 本仓没有单独的基线文档）
 //! 里有四项是**恒定值**，也正是反代最容易写错、写错了还不会报错的地方：
 //!
 //! ```text
 //!   ① keyfrom        官方包恒为 `official`（构建期固化；^[a-z0-9_-]{1,64}$，小写）
 //!   ② Capabilities   恒 4 段、英文逗号连接、无空格、顺序固定
-//!   ③ 版本三处一致   body.version / X-LobsterAI-Client-Version / UA 里的 LobsterAI/<ver>
+//!   ③ 版本同源       body.version / X-LobsterAI-Client-Version / UA 里的
+//!                    LobsterAI/<ver> 取自同一份已解析版本；各请求按需携带
+//!                    （对话：版本头＋UA；鉴权：body.version＋UA；
+//!                    目录：URL＋版本头＋UA），没有一条请求同时带三处
 //!   ④ UA            Electron(Chromium) 默认 UA，同时含 LobsterAI/<ver> 与 Electron/<ver>
 //! ```
 //!
@@ -34,7 +38,8 @@
 //! ```
 //!
 //! ── 硬约束 ──────────────────────────────────────────────────
-//! release 是 `panic=abort`：本文件零 unwrap/expect/panic。
+//! release 是 `panic = "unwind"`（workspace Cargo.toml）：panic 会被请求边界的
+//! `catch_unwind` 兜住，不会带走整个插件进程；本文件仍保持零 unwrap/expect/panic。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

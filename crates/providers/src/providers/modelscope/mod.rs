@@ -190,6 +190,10 @@ impl Provider for ModelScopeProvider {
                 // 网关的发送层会自动补 Content-Type；这里只加鉴权与 Accept
                 ("Authorization".to_string(), format!("Bearer {token}")),
                 ("Accept".to_string(), "text/event-stream".to_string()),
+                // 聊天走 plan：UA 必须显式带（核心 egress 默认是 undici，
+                // 见 http::DEFAULT_USER_AGENT 的注释）。代码里没有逐字符可考的
+                // 官方 UA，先用共享浏览器 UA。
+                ("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()),
             ];
             Ok(ChatPlan::chat(
                 format!("{}/chat/completions", region.inference_base_url()),
