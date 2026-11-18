@@ -39,10 +39,20 @@ impl From<proto::CheckinReport> for CheckinResult {
 //   4. 自己已有 planned 且未到点 → 按既定计划走（不重新随机）；
 //   5. 状态 6 小时过期：跨天/跨轮自然失效，不影响宿主补签轮；
 //   6. manual=true（面板手动点击）直接放行，但同样记账。
+//
+// fx5（2026-11-18）修三处：
+//   a. 推迟改报 Inactive —— 宿主只登记「中性 outcome」的 retry_at，
+//      Failed 只进失败列表不排重试，被推迟账号会永远等不到重试
+//      （11-18 凌晨 12 个第 2 号实锤）；
+//   b. planned 到点直接放行，不被同家后来者的 planned 反复顶开；
+//   c. retry_at 垫底 ≥10 分钟（宿主拒收过近闹钟，对齐 zcode）。
 pub(crate) const STAGGER_MIN_INTERVAL_MS: i64 = 30 * 60 * 1000;
 pub(crate) const STAGGER_JITTER_MS: i64 = 10 * 60 * 1000;
 const STAGGER_STALE_MS: i64 = 6 * 60 * 60 * 1000;
 const STAGGER_KIND: &str = "checkinStagger";
+
+/// 宿主对过近的 retry_at 会拒收/不登记：垫底 10 分钟（对齐 zcode）。
+const STAGGER_RETRY_FLOOR_MS: i64 = 10 * 60 * 1000;
 
 #[derive(Clone, Debug, Deserialize)]
 struct StaggerState {
@@ -73,6 +83,12 @@ fn plan_stagger(
                 return StaggerGate::Defer(planned);
             }
         }
+    }
+    // 计划已到点：直接放行 —— 这个 planned 本来就是自己占的坑。
+    // 若再走一遍占用检查，会被同家第 3+ 号的未来 planned 反复顶开，
+    // 重试链打滑（fx3 遗留）。
+    if mine.as_ref().map(|s| s.planned.is_some()).unwrap_or(false) {
+        return StaggerGate::Proceed;
     }
     // 其它账号的最近占用（真实触碰或计划占用），过期条目忽略。
     let occupied = others
@@ -114,6 +130,11 @@ fn jitter_ms() -> i64 {
     state = state.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     state ^= state >> 29;
     (state % STAGGER_JITTER_MS as u64) as i64
+}
+
+/// 推迟的 retry_at：承诺时刻与垫底值取大者（宿主拒收过近闹钟）。
+fn defer_retry_at(now: i64, planned: i64) -> i64 {
+    planned.max(now + STAGGER_RETRY_FLOOR_MS)
 }
 
 fn parse_state(raw: serde_json::Value) -> Option<StaggerState> {
@@ -171,10 +192,14 @@ async fn stagger_gate(
             let at = mine_at.unwrap_or(now);
             let state = serde_json::json!({ "at": at, "planned": planned });
             let _ = ctx.ledger_put(account, STAGGER_KIND, &state).await;
-            let wait_min = (planned - now) / 60_000;
+            // 宿主只登记「中性 outcome」携带的 retry_at（zcode 源码注释
+            // 实锤：「中性未领取，按 retryAt 稍后重试」）；Failed 不排
+            // 重试 —— 11-18 凌晨 12 个被推迟账号因此站了一夜。
+            let retry_at = defer_retry_at(now, planned);
+            let wait_min = (retry_at - now) / 60_000;
             Some(CheckinResult {
                 report: proto::CheckinReport {
-                    outcome: proto::CheckinOutcome::Failed,
+                    outcome: proto::CheckinOutcome::Inactive,
                     credit: None,
                     streak: None,
                     message: Some(format!(
@@ -183,7 +208,7 @@ async fn stagger_gate(
                         STAGGER_MIN_INTERVAL_MS / 60_000
                     )),
                 },
-                retry_at: Some(planned),
+                retry_at: Some(retry_at),
                 details: Some(serde_json::json!({
                     "reason": "providerStagger",
                     "plannedAt": planned,
@@ -316,5 +341,24 @@ mod stagger_tests {
         assert!(samples.iter().all(|v| (0..STAGGER_JITTER_MS).contains(v)));
         let distinct: std::collections::HashSet<i64> = samples.iter().copied().collect();
         assert!(distinct.len() > 1, "抖动逐次调用应当不同");
+    }
+
+    #[test]
+    fn due_plan_not_pushed_by_later_reservations() {
+        // 计划到点时，同家第 3+ 号的未来 planned 不应把自己顶开
+        // （fx3 会再走占用检查 → 每次回来都被推 30 分钟，重试链打滑）。
+        let mine = st(T0 - 60_000, Some(T0));
+        let others = vec![st(T0 - 120_000, Some(T0 + 20 * 60_000))];
+        assert_eq!(
+            plan_stagger(T0, Some(mine), &others, 42),
+            StaggerGate::Proceed
+        );
+    }
+
+    #[test]
+    fn retry_at_floored_to_ten_minutes() {
+        // 宿主拒收过近的 retry_at：垫底 ≥10 分钟；正常承诺时刻不受影响。
+        assert_eq!(defer_retry_at(T0, T0 + 5 * 60_000), T0 + 10 * 60_000);
+        assert_eq!(defer_retry_at(T0, T0 + 45 * 60_000), T0 + 45 * 60_000);
     }
 }

@@ -87,6 +87,8 @@ pub(super) fn images(
     client_headers: &BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
     let mut headers = tracking_headers(session, client_headers, "image.generate");
+    // 同 chat()：图像 plan 同样由核心 egress 转发，不带 UA 自曝 undici。
+    headers.push(("User-Agent".to_string(), crate::http::DEFAULT_USER_AGENT.to_string()));
     headers.push(("Accept".to_string(), "application/json".to_string()));
     headers
 }
