@@ -2,6 +2,7 @@ mod account;
 mod chat;
 mod checkin;
 mod errors;
+mod fingerprint;
 mod i18n;
 mod login;
 mod models;

@@ -1,23 +1,41 @@
 //! 地址来自旧 LobsterAI 实现。所有请求交给宿主，既不读环境变量，也不另建出网通道。
 
-use super::errors;
+use super::{errors, fingerprint};
 use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 
 pub const API: &str = "https://lobsterai-server.youdao.com";
 pub const PORTAL: &str = "https://lobsterai.youdao.com";
 pub const VERSION_URL: &str =
     "https://api-overmind.youdao.com/openapi/get/luna/hardware/lobsterai/prod/update";
-pub const USER_AGENT: &str = "LobsterAI/0.1.0";
-pub const CAPABILITIES: &str = "kimi-k3-agentic-v1,thinking-level-control-v1";
 
+/// 客户端能力位与 UA 由 `fingerprint` 统一定义（fx1：官方恒 4 段 + Electron 形态 UA）。
+pub use fingerprint::CLIENT_CAPABILITIES as CAPABILITIES;
+
+/// 完整头集合：鉴权 + 能力位 + 版本头 + 官方形态 UA。
+/// `version` 为 None 时能力位与版本头不发，UA 用兜底版本生成（绝不发空 token）。
 pub fn headers(token: Option<&str>, version: Option<&str>) -> Value {
-    let mut headers = json!({ "accept": "application/json", "content-type": "application/json", "user-agent": USER_AGENT });
+    let mut headers = json!({ "accept": "application/json", "content-type": "application/json",
+        "user-agent": fingerprint::user_agent(version.unwrap_or("")) });
     if let Some(token) = token {
         headers["authorization"] = json!(format!("Bearer {token}"));
     }
     if let Some(version) = version {
         headers["x-lobsterai-client-capabilities"] = json!(CAPABILITIES);
         headers["x-lobsterai-client-version"] = json!(version);
+    }
+    headers
+}
+
+/// 鉴权类头集合（换码 / 续期 / 签到 / 积分查询）：鉴权 + 官方形态 UA，**不带**
+/// `X-LobsterAI-Client-Capabilities` 与 `X-LobsterAI-Client-Version`。
+/// 原生 `oauth::post_anonymous` 与 `checkin::request_json` / `usage::query_usage`
+/// 的头集合就是这个口径 —— 多一个能力位头同样是破绽。
+/// `version` 为 None 时 UA 用兜底版本生成。
+pub fn auth_headers(token: Option<&str>, version: Option<&str>) -> Value {
+    let mut headers = json!({ "accept": "application/json", "content-type": "application/json",
+        "user-agent": fingerprint::user_agent(version.unwrap_or("")) });
+    if let Some(token) = token {
+        headers["authorization"] = json!(format!("Bearer {token}"));
     }
     headers
 }
@@ -64,8 +82,28 @@ pub fn request(
     read_json(response)
 }
 
-pub fn anonymous(path: &str, body: &Value) -> Result<Value> {
-    request("POST", path, None, None, Some(body))
+/// 鉴权类请求（签到 / 积分查询 / 换码 / 续期）：只发鉴权头 + 官方形态 UA，
+/// 不带能力位与版本头（见 `auth_headers`）。`version` 决定 UA 里的版本 token。
+pub fn request_auth(
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    version: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
+    let response = http::open_timeout(
+        method,
+        &format!("{API}{path}"),
+        auth_headers(token, Some(version)),
+        body,
+        30_000,
+    )
+    .map_err(transport)?;
+    read_json(response)
+}
+
+pub fn anonymous(path: &str, body: &Value, version: &str) -> Result<Value> {
+    request_auth("POST", path, None, version, Some(body))
 }
 
 pub fn envelope(value: &Value, operation: &str) -> Result<Value> {
@@ -88,13 +126,16 @@ pub fn envelope(value: &Value, operation: &str) -> Result<Value> {
         .ok_or_else(|| errors::session("LobsterAI 登录状态已失效，请重新登录"))
 }
 
-pub fn get(path: &str, token: &str, operation: &str) -> Result<Value> {
-    envelope(&request("GET", path, Some(token), None, None)?, operation)
+pub fn get(path: &str, token: &str, version: &str, operation: &str) -> Result<Value> {
+    envelope(
+        &request_auth("GET", path, Some(token), version, None)?,
+        operation,
+    )
 }
 
-pub fn post(path: &str, token: &str, body: &Value, operation: &str) -> Result<Value> {
+pub fn post(path: &str, token: &str, body: &Value, version: &str, operation: &str) -> Result<Value> {
     envelope(
-        &request("POST", path, Some(token), None, Some(body))?,
+        &request_auth("POST", path, Some(token), version, Some(body))?,
         operation,
     )
 }

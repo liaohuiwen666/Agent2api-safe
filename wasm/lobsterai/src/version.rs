@@ -1,10 +1,17 @@
 //! 版本读取 data.value.version；账号状态保留 12 小时缓存，临时共享缓存不含凭据。
 //! 宿主 session TTL 最长 15 分钟，因此不能只照抄原生进程内 12 小时缓存。
+//!
+//! 缓存分层（fx1 移植时的 WASM 适配，原生是进程内 12 小时单缓存）：先读宿主
+//! session（`client-version`，TTL 15 分钟 = 宿主上限），再读账号 state
+//! （`Scope::Account`，12 小时，与原生 TTL 同值），最后现取更新接口；
+//! 取不到时用账号 state 里的旧值兜底，再不行用兜底常量。
+//! 兜底常量由 `fingerprint::FALLBACK_CLIENT_VERSION` 定义（fx1：`2026.11.16`，
+//! 旧 WASM 值 `2026.9.4` 已明显落后于官方当前发布版）。
 
-use super::{account, upstream};
+use super::{account, fingerprint, upstream};
 use agent2api_wasm_sdk::{self as sdk, http, json, state::Scope, Value};
 
-const FALLBACK: &str = "2026.9.4";
+const FALLBACK: &str = fingerprint::FALLBACK_CLIENT_VERSION;
 const TTL: i64 = 12 * 60 * 60 * 1000;
 const KEY: &str = "client-version";
 

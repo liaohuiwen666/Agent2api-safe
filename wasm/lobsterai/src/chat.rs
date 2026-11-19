@@ -1,7 +1,7 @@
 //! 上游仅收 SSE；保留原消息及工具历史，按当前模型目录映射官方思考方言。
 //! 空帧不提交成功响应，先排除流内业务失败；已输出后绝不从头重试。
 
-use super::{account, errors, models, reasoning, upstream, version};
+use super::{account, errors, fingerprint, models, reasoning, upstream, version};
 use agent2api_wasm_sdk::{self as sdk, http, json, Error, Result, Value};
 
 #[derive(Default)]
@@ -316,8 +316,34 @@ pub fn forward(params: &Value) -> Result<()> {
     let payload = body(params)?;
     account::validate_current(&account)?;
     let token = account::access(&account["secret"])?;
-    let mut headers = upstream::headers(Some(&token), Some(&version::resolve()));
+    // 版本一处取值、三处复用（版本头 / UA 里的 `LobsterAI/<ver>` / 换码续期 body.version
+    // 同源）：三处的值必须一致，写岔一处就是指纹差异。
+    let client_version = version::resolve();
+    let mut headers = upstream::headers(Some(&token), Some(&client_version));
     account::validate_current(&account)?;
+    // fx1：官方每 turn 一条 traceparent + 三个用量归因头。
+    // `x-lobster-session-id` 由「账号 + 第一条 user 消息」派生，会话内稳定；
+    // `x-lobster-turn-id` 即本次 traceId；`x-lobster-user-message` 为本次 turn
+    // 的用户消息（前 200 码点、URL 编码），有 user turn 时才发。
+    let trace = fingerprint::RequestTrace::new();
+    let account_id = account["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| account::identity(&account["secret"]));
+    let first_message = fingerprint::first_user_message(&payload);
+    headers["traceparent"] = json!(trace.traceparent());
+    headers["x-lobster-session-id"] =
+        json!(fingerprint::session_id(&account_id, &first_message));
+    headers["x-lobster-turn-id"] = json!(fingerprint::turn_id(&trace));
+    if let Some(message) = fingerprint::last_user_message(&payload) {
+        let value = fingerprint::user_message_header(&message);
+        if !value.is_empty() {
+            headers["x-lobster-user-message"] = json!(value);
+        }
+    }
+    // `x-lobster-model-preset` 故意不发：官方只在「请求的 model 与本 turn 在
+    // 界面里选定的 preset 一致」时附加，网关没有「界面 preset」这个概念。
     headers["accept"] = json!("text/event-stream, application/json");
     let response = http::open(
         "POST",

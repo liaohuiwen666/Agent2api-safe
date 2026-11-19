@@ -5,7 +5,7 @@ use agent2api_wasm_sdk::{self as sdk, json, state::Scope, Error, Result, Value};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use url::Url;
 
-use super::{account, upstream, version};
+use super::{account, fingerprint, upstream, version};
 
 const KEY: &str = "authorization";
 const TTL: i64 = 6 * 60 * 1000;
@@ -209,13 +209,17 @@ pub fn callback(params: &Value) -> Result<Value> {
         return Err(Error::http(409, "本次授权已在处理，请勿重复提交"));
     }
     let result = (|| -> Result<Value> {
-        let keyfrom = sdk::now().to_string();
+        // fx1：keyfrom 恒为官方渠道名 `official`。旧实现用登录时刻的毫秒时间戳，
+        // 「渠道名是 13 位数字」本身就是一眼可辨的异常；且官方语义是只写一次、
+        // 之后永不变化，时间戳每次登录都变，与之相反。
+        let keyfrom = fingerprint::OFFICIAL_KEYFROM;
         let uuid = uuid()?;
+        let client_version = version::resolve();
         let body = json!({ "authCode": code, "uuid": uuid, "firstKeyfrom": keyfrom,
-            "latestKeyfrom": keyfrom, "version": version::resolve() });
-        let value = upstream::anonymous("/api/auth/exchange", &body)?;
+            "latestKeyfrom": keyfrom, "version": client_version });
+        let value = upstream::anonymous("/api/auth/exchange", &body, &client_version)?;
         let data = upstream::envelope(&value, "授权换码")?;
-        let secret = account::login_bundle(&data, &uuid, &keyfrom)?;
+        let secret = account::login_bundle(&data, &uuid, keyfrom)?;
         Ok(json!({ "state": "done", "account": account::normalized(secret)? }))
     })();
     // 不允许取消后的换码结果覆盖新状态；flow 内不保存令牌或授权码。
