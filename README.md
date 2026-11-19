@@ -184,3 +184,79 @@ the old contract; a field mismatch may still compile and fail at runtime.
 ## License
 
 AGPL-3.0
+
+## Fork additions — Agent2api-safe (WASM port of the fx patches)
+
+This fork is based on the upstream `beta` branch (commit `694d5d9`) and
+re-applies the fork's native-plugin fingerprint/identity fixes (`fx1`/`fx2`/
+`fx4`/`fx5`) to the WASM crates in `wasm/<provider>/`. The `fx3` sign-in
+staggering was reverted upstream in `fx6` and is intentionally **not** ported.
+`wasm/sdk` is untouched. TLS fingerprinting cannot be done at the plugin layer
+in WASM (the host owns the TLS stack); only application-layer identity is
+ported here.
+
+Ported (branch `wasm-port`, 19 files, +571/−35 vs upstream beta):
+
+- **lobsterai** (`wasm/lobsterai/src/`): Electron/43.5.0-form UA
+  (`LobsterAI/<CalVer> Chrome/150.0.0.0 Electron/43.5.0`), `keyfrom=official`
+  (numeric-timestamp keyfroms normalized on read), 4-segment capabilities
+  (`virtual-models-v1,kimi-k3-agentic-v1,thinking-level-control-v1,upstream-error-details-v1`),
+  `traceparent` + `x-lobster-session-id`/`turn-id`/`user-message` headers,
+  version header from live CalVer (host state/session cache, fallback
+  `2026.11.16`). Virtual models `yd-fast`/`yd-ultra` are filtered out of the
+  catalog, as in native (they need a `/resolve` endpoint this adapter does
+  not implement).
+- **autoclaw** (`wasm/autoclaw/src/headers.rs`): chat UA Chrome/147.
+- **loomy** (`wasm/loomy/src/headers.rs`, `client.rs`, `sign.rs`): chat + image
+  UA Chrome/147, `Accept-Language: zh-CN,zh;q=0.9,en;q=0.8`.
+- **modelscope** (`wasm/modelscope/src/provider/`): chat UA Chrome/147,
+  `Referer`/`Accept`/`Sec-Fetch-*` on `site_json` (no `Origin`).
+- **officeace** (`wasm/officeace/src/chat.rs`): chat UA Chrome/147
+  (host account `userAgent` still wins when set).
+- **raccoon** (`wasm/raccoon/src/config.rs`): `AsyncOpenAI/Python 2.8.0`
+  replaced with Chrome/147.
+- **codearts** (`wasm/codearts/src/signer.rs`): chat + control-plane UA
+  Chrome/147 added in the signer (the crate sent none).
+- **trae**: no change — official WASM crate already sends the correct
+  identity (`Trae/0.1.69` chat, `VSCode 1.107.1 (TRAE CN)` usage/sign-in).
+
+Build: `node wasm/build.mjs <provider>` (WASM output, no glibc concern).
+Packages are installed **unsigned** — the gateway only trusts the
+`official-2026` key, and a self-signed package is rejected as Invalid.
+
+### Verification on beta.1 (branch `wasm-port-beta1compat`)
+
+The beta.1 gateway host only implements 24 WASM capabilities and lacks host
+methods the beta-branch crates declare (`http.timeout.v1`,
+`login.sms.v1`, `desktop.credentials.v1`, `credentials.legacy-import.v1`,
+`resources.fetch-public.v1`). `wasm-port-beta1compat` only trims those
+declarations from `wasm.json` for **lobsterai, autoclaw, modelscope** so the
+packs install on beta.1 — **revert those trims before beta.2** (the beta.2
+host provides them). Five providers cannot be verified on beta.1 at all —
+their chat/refresh paths call beta.2-only host methods (`protocol.convert`,
+`http.open_account`, `codearts.session.*`, `runtime.platform`): **loomy,
+officeace, codearts, trae, raccoon**.
+
+Verified live on the beta.1 production gateway 2026-11-19 (pinned
+`/api/models/test`, manual token refresh, check-in records):
+
+- **lobsterai** ✅ chat 200 (deepseek-flash, 83–89 tokens) · refresh ✅
+  (token rotated) · check-in 2026-11-19 ✅ +100 (native, before install;
+  WASM `checkin.claim` first runs 2026-11-20 00:01–00:40 CST).
+- **autoclaw** ✅ chat 200 (auto-fast, 193 tokens) · refresh ✅ — including
+  account `87ad4254` (user 919958), whose refresh failed all day 2026-11-18
+  under native; first success 2026-11-19 01:20:06 UTC auto-refresh, minutes
+  after the WASM pack took over (token rotated, new 24 h expiry) · check-in
+  2026-11-19 ✅ +200 × 3 accounts (native; WASM claim untested until
+  tonight's window).
+- **modelscope** ✅ chat 200 (ZhipuAI/GLM-5.2, 131 tokens) · refresh is a
+  no-op by design (`refresh: false`, long-lived token re-read; the core
+  reports "未产生变化", same as native) · check-in 2026-11-19 ✅ +250 × 2
+  (native; WASM claim untested until tonight's window). Note:
+  `MiniMax/MiniMax-M3` and `moonshotai/Kimi-K3.1-Pro` return upstream 400
+  "has no provider supported" on **both** accounts — identical on the native
+  pack (A/B tested), i.e. pre-existing upstream model availability, not a
+  WASM regression.
+
+Full status, evidence and the GO/NO-GO for the beta.2 core upgrade:
+`~/workspace/a2a-wasm-migration-report.md` (migration workspace, not in git).
