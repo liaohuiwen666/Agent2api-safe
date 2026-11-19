@@ -91,6 +91,8 @@ pub fn headers(path: &str, body: &[u8]) -> Result<Value> {
     let signature = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
     Ok(
         json!({ "Authorization": format!("account {ACCESS_KEY_ID}:{signature}"), "Date": date,
+        // 签名串不含 UA / Accept-Language，补这两项不影响签名校验；控制面默认身份与聊天一致。
+        "User-Agent": super::headers::BROWSER_USER_AGENT, "Accept-Language": super::headers::ACCEPT_LANGUAGE,
         "Nonce": nonce, "Content-MD5": md5, "Content-Type": "application/json", "Accept": "application/json" }),
     )
 }

@@ -210,6 +210,7 @@ pub fn forward(region: Region, params: &Value) -> Result<()> {
         "POST",
         &format!("{}/chat/completions", region.inference_base()),
         json!({ "Authorization": format!("Bearer {token}"),
+            "User-Agent": super::BROWSER_USER_AGENT,
             "Accept": "text/event-stream", "Content-Type": "application/json" }),
         Some(&body),
     )?;

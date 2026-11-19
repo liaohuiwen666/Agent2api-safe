@@ -7,12 +7,20 @@ use super::{endpoints, util};
 const APP_ID: &str = "100003";
 const APP_KEY: &str = "38d2391985e2369a5fb8227d8e6cd5e5";
 
+/// fx2/fx4 共享浏览器身份（WASM 无共享客户端默认头，每包自带一份常量）。
+/// 控制面与聊天 plan 共用这一份；绝不能是 `undici`（核心 egress 默认值，会自曝）。
+/// 官方客户端是 Electron，但代码里没有逐字符可考的 UA，先用共享浏览器 UA。
+pub const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+/// 浏览器固定会带的语言头；缺失它是一处廉价特征。
+pub const ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
+
 pub fn signed(token: &str) -> Result<Value> {
     let now = sdk::now();
     if now <= 0 { return Err(Error::new("宿主时钟不可用，不能生成 AutoClaw 请求签名")); }
     let timestamp = (now / 1000).to_string();
     let sign = format!("{:x}", Md5::digest(format!("{APP_ID}&{timestamp}&{APP_KEY}").as_bytes()));
     let mut headers = json!({ "Content-Type": "application/json", "Accept": "*/*",
+        "User-Agent": BROWSER_USER_AGENT, "Accept-Language": ACCEPT_LANGUAGE,
         "X-Version": endpoints::CLIENT_VERSION, "X-Product": "autoclaw", "X-Client-Type": "pc",
         "X-Harness-Type": "zcode", "X-Tm": "win", "X-Lang": "zh-CN", "X-Channel": "official",
         "X-Auth-Appid": APP_ID, "X-Auth-TimeStamp": timestamp, "X-Auth-Sign": sign, "X-Trace-Id": util::uuid()? });
@@ -26,6 +34,7 @@ pub fn chat(token: &str, route: &str, input: &Value) -> Result<Value> {
     util::token_valid(&token, false)?;
     if !util::printable(route, 512) || route.is_empty() { return Err(Error::http(400, "AutoClaw 模型路由名无效")); }
     let mut headers = json!({ "Content-Type": "application/json", "Accept": "*/*",
+        "User-Agent": BROWSER_USER_AGENT,
         "X-Product": "autoclaw", "X-Client-Type": "pc", "X-Tm": "win", "X-Version": endpoints::CHAT_VERSION,
         "X-Lang": "zh-CN", "X-Channel": "official", "x_trace_id": "autoclaw-desktop",
         "X-Authorization": format!("Bearer {token}"), "X-Request-Id": util::uuid()?, "X-Request-Model": route });

@@ -39,14 +39,26 @@ impl Client {
     }
 
     pub fn site_json(&self, path: &str, operation: &str) -> Result<Value> {
-        self.get(&format!("{}{path}", self.region.site_base()),
-            json!({ "Cookie": format!("m_session_id={}", self.token), "Accept": "application/json" }),
+        // 网页会话请求按「站点内 XHR」补齐浏览器固定头：
+        // 真浏览器从 modelscope.cn 页面发起的同源 GET 必带 Referer 与
+        // sec-fetch-*；Origin 只在 POST / 跨域时出现，同源 GET 不带它，
+        // 补了反而是特征。此前只有 Cookie 一项，本身就是廉价特征。
+        // UA 与 Accept-Language 原生由共享客户端默认身份提供，WASM 无此默认，
+        // 在此显式补齐。
+        let base = self.region.site_base();
+        self.get(&format!("{}{path}", base),
+            json!({ "Cookie": format!("m_session_id={}", self.token),
+                "User-Agent": super::BROWSER_USER_AGENT, "Accept-Language": super::ACCEPT_LANGUAGE,
+                "Referer": format!("{base}/"), "Accept": "application/json, text/plain, */*",
+                "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty" }),
             operation, true)
     }
 
     pub fn models_json(&self) -> Result<Value> {
         self.get(&format!("{}/models", self.region.inference_base()),
-            json!({ "Authorization": format!("Bearer {}", self.token), "Accept": "application/json" }),
+            json!({ "Authorization": format!("Bearer {}", self.token),
+                "User-Agent": super::BROWSER_USER_AGENT, "Accept-Language": super::ACCEPT_LANGUAGE,
+                "Accept": "application/json" }),
             "模型目录查询", false)
     }
 
