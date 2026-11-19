@@ -8,6 +8,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{credentials::Credential, encoding, endpoints::Target, errors, util};
 
+/// 共享浏览器 UA：签名之后才附加，不进签名（与“不签会被宿主覆盖的 UA”
+/// 同一道理），宿主按账号覆盖时仍以账号值为准。原生 codearts 每条请求
+/// 都带账号 UA（`with_account_user_agent` + signer 覆写），WASM 版聊天
+/// 与控制面此前全都不带 UA，全靠宿主默认值——此处补齐，恢复原生行为。
+pub const BROWSER_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
 pub fn signed_get(target: &Target, credential: &Credential, body: &[u8]) -> Result<Value> {
     if !body.is_empty() { return Err(errors::invalid("CodeArts GET 请求不接受正文")); }
     signed_request("GET", target, credential, body)
@@ -86,6 +93,8 @@ pub fn signed_request(method: &str, target: &Target, credential: &Credential, bo
             credential.access_key_id
         ),
     ));
+    // UA 不参与签名（上游已在 names 之外），签完再补：宿主仍可按账号覆盖。
+    headers.push(("User-Agent".into(), BROWSER_USER_AGENT.into()));
     Ok(Value::Object(
         headers
             .into_iter()
