@@ -72,6 +72,14 @@ fn model(item: &Value) -> Option<Value> {
     if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
         return None;
     }
+    // 虚拟模型（`yd-fast` / `yd-ultra`）不进目录：它们要用 `POST
+    // /api/models/<id>/resolve` 现解析成真实模型，而本适配器只实现
+    // `POST /api/proxy/v1/chat/completions` 这条路径，把虚拟 id 摆上目录
+    // 等于给用户一个点了必然失败的模型。原生版在 entry_from_upstream 里过滤，
+    // 移植时漏了，这里补上（否则刷新后它们以无前缀裸 ID 进目录）。
+    if matches!(id.to_ascii_lowercase().as_str(), "yd-fast" | "yd-ultra") {
+        return None;
+    }
     let name = item["modelName"]
         .as_str()
         .map(str::trim)
