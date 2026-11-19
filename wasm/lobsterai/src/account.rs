@@ -5,7 +5,7 @@ use agent2api_wasm_sdk::{self as sdk, json, AccountLock, Error, Result, Value};
 use base64::{engine::general_purpose, Engine};
 use sha2::{Digest, Sha256};
 
-use super::{errors, upstream, version};
+use super::{errors, fingerprint, upstream, version};
 
 pub fn text(value: &Value, keys: &[&str]) -> String {
     keys.iter()
@@ -276,6 +276,14 @@ fn canonical(payload: &Value) -> Result<Value> {
             secret[target] = json!(value);
         }
     }
+    // 两个 keyfrom 在读凭证时按官方口径归一（fx1）：旧版本把登录时刻的毫秒时间戳
+    // 写进了这两个字段，直接回传就是「非官方渠道名」；归一放在这里，存量账号
+    // 不必重新登录也会被纠正（`fingerprint::normalize_keyfrom`）。
+    for field in ["firstKeyfrom", "latestKeyfrom"] {
+        if let Some(value) = secret.get(field).and_then(Value::as_str).map(str::to_string) {
+            secret[field] = json!(fingerprint::normalize_keyfrom(&value));
+        }
+    }
     access(&secret)?;
     if secret["uuid"]
         .as_str()
@@ -380,6 +388,8 @@ pub fn normalize(params: &Value) -> Result<Value> {
 pub fn login_bundle(data: &Value, uuid: &str, keyfrom: &str) -> Result<Value> {
     let mut secret = canonical(data)?;
     secret["uuid"] = json!(uuid);
+    // keyfrom 再过一次归一，避免调用方手滑传了时间戳（fx1；正常应为 `official`）。
+    let keyfrom = fingerprint::normalize_keyfrom(keyfrom);
     secret["firstKeyfrom"] = json!(keyfrom);
     secret["latestKeyfrom"] = json!(keyfrom);
     secret["createdAt"] = json!(sdk::now());
@@ -391,14 +401,16 @@ pub fn login_bundle(data: &Value, uuid: &str, keyfrom: &str) -> Result<Value> {
 }
 
 pub fn keyfrom_fields(secret: &Value, client_version: &str) -> Vec<(&'static str, String)> {
+    // 两个 keyfrom 已在 `canonical` 里归一过，这里再归一一次是防御性的：
+    // 直接读 secret 的调用方（续期 body、目录 query、积分 query）拼出去的恒是合法渠道名。
     let mut fields = vec![
         (
             "firstKeyfrom",
-            text(secret, &["firstKeyfrom", "first_keyfrom"]),
+            fingerprint::normalize_keyfrom(&text(secret, &["firstKeyfrom", "first_keyfrom"])),
         ),
         (
             "latestKeyfrom",
-            text(secret, &["latestKeyfrom", "latest_keyfrom"]),
+            fingerprint::normalize_keyfrom(&text(secret, &["latestKeyfrom", "latest_keyfrom"])),
         ),
         ("version", client_version.to_string()),
     ];
@@ -510,7 +522,7 @@ pub fn refresh() -> Result<String> {
         secret,
         &["refreshToken", "refresh_token"]
     )));
-    let response = upstream::anonymous("/api/auth/refresh", &body)?;
+    let response = upstream::anonymous("/api/auth/refresh", &body, &client_version)?;
     let data = upstream::envelope(&response, "续期")?;
     let fresh = canonical(&data)?;
     validate_current(&current)?;
