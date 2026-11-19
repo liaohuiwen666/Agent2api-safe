@@ -3,6 +3,11 @@
 
 use agent2api_wasm_sdk::{self as sdk, json, Error, Result, Value};
 
+/// fx4 共享浏览器 UA。原值 `AsyncOpenAI/Python 2.8.0` 是 Python SDK 身份，
+/// 与桌面端不符，且聊天走宿主 http.open 时会原样出站，必须换掉。
+pub const CHAT_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
 pub fn schema() -> Value {
     json!({ "version": 1, "title": "小浣熊客户端兼容设置", "runtime_overrides": false,
         "description": "平台和默认架构由主程序提供。可填写真实客户端版本，必要时覆盖架构；不读取本机外部头文件，也不允许覆盖认证信息。",
@@ -85,7 +90,7 @@ pub fn chat() -> Result<Value> {
         "linux" => "Linux",
         _ => "Unknown",
     };
-    let mut headers = json!({ "User-Agent": "AsyncOpenAI/Python 2.8.0", "X-Stainless-Lang": "python",
+    let mut headers = json!({ "User-Agent": CHAT_USER_AGENT, "X-Stainless-Lang": "python",
         "X-Stainless-Package-Version": "2.8.0", "X-Stainless-OS": os, "X-Stainless-Arch": stainless_arch,
         "X-Stainless-Runtime": "CPython", "X-Stainless-Runtime-Version": "3.12.13",
         "X-Stainless-Async": "async:asyncio", "X-Stainless-Retry-Count": "0",

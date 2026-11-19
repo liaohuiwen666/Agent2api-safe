@@ -5,6 +5,13 @@
 use super::{account, client, credentials::Credentials, errors, util};
 use agent2api_wasm_sdk::{self as sdk, json, protocol, sse::SseDecoder, Error, Result, Value};
 
+/// fx4 移植：聊天请求显式带共享浏览器 UA。原生 plan 里不带 UA 时核心
+/// egress 默认发 `undici`；WASM 里宿主仍可能按账号覆盖它（见 signer.rs
+/// “不签 user-agent”），但聊天走 Basic 鉴权、不经签名，带上它无害——
+/// 有账号覆盖时宿主说了算，没有时它就是出站身份。
+pub const CHAT_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
 fn prepare(body: &Value) -> Result<Value> {
     if !body.is_object() {
         return Err(Error::http(400, "OfficeAce 请求体必须是 JSON 对象"));
@@ -48,7 +55,7 @@ pub fn forward(params: &Value) -> Result<()> {
         "/v2/chat/completions",
         &credential,
         Some(&body),
-        json!({ "accept": "*/*", "Chat-Id": util::random_hex(16)?, "Session-Id": util::random_hex(16)?, "lang": "en" }),
+        json!({ "accept": "*/*", "user-agent": CHAT_USER_AGENT, "Chat-Id": util::random_hex(16)?, "Session-Id": util::random_hex(16)?, "lang": "en" }),
     )?;
     let json_response = response.header_values("content-type").iter().any(|value| {
         let mime = value
