@@ -2,7 +2,7 @@
 
 use agent2api_wasm_sdk::{http, json, Error, Result, Value};
 
-use super::{errors, sign, ACCOUNT_BASE, INTEGRATION_BASE};
+use super::{errors, headers, sign, ACCOUNT_BASE, INTEGRATION_BASE};
 
 pub fn read_json(response: http::Response, operation: &str, secrets: &[&str]) -> Result<Value> {
     let status = response.status;
@@ -57,6 +57,7 @@ pub fn token_request(
         return Err(Error::http(401, "Loomy 账号缺少 session"));
     }
     let headers = json!({ "token": session, "Authorization": format!("Bearer {session}"),
+        "User-Agent": headers::BROWSER_USER_AGENT, "Accept-Language": headers::ACCEPT_LANGUAGE,
         "Content-Type": "application/json", "Accept": "application/json" });
     let response = http::open(method, &format!("{INTEGRATION_BASE}{path}"), headers, body)
         .map_err(|mut error| {

@@ -30,6 +30,13 @@ mod transactions;
 
 pub use region::Region;
 
+/// fx2/fx4 共享浏览器身份（WASM 无共享客户端默认头，每包自带一份常量）。
+/// 控制面与聊天 plan 共用这一份；绝不能是 `undici`（核心 egress 默认值，会自曝）。
+/// 代码里没有逐字符可考的官方 UA，先用共享浏览器 UA。
+pub(crate) const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+/// 浏览器固定会带的语言头；缺失它是一处廉价特征。
+pub(crate) const ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
+
 use agent2api_wasm_sdk::{json, Error, Result, Value};
 
 fn metadata(region: Region) -> Value {
